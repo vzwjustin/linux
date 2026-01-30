@@ -138,6 +138,7 @@ source "net/ipv4/Kconfig"
 source "net/ipv6/Kconfig"
 source "net/netlabel/Kconfig"
 source "net/mptcp/Kconfig"
+source "net/quic/Kconfig"
 source "net/tquic/Kconfig"
 
 endif # if INET
