@@ -720,6 +720,39 @@ struct tquic_packet_header {
 	u8 spin_bit;
 };
 
+/**
+ * struct tquic_packet - Complete packet structure
+ * @hdr: Parsed header
+ * @payload: Pointer to payload data
+ * @payload_len: Length of payload
+ * @raw: Raw packet data
+ * @raw_len: Total raw packet length
+ * @path: Path this packet arrived on / will be sent on
+ * @pn_space: Packet number space
+ * @ack_eliciting: Whether packet is ACK-eliciting
+ * @in_flight: Whether packet counts as in-flight
+ * @sent_time: Time packet was sent
+ * @list: List linkage for packet queues
+ */
+struct tquic_packet {
+	struct tquic_packet_header hdr;
+
+	u8 *payload;
+	size_t payload_len;
+
+	u8 *raw;
+	size_t raw_len;
+
+	struct tquic_path *path;
+	u8 pn_space;
+
+	bool ack_eliciting;
+	bool in_flight;
+
+	ktime_t sent_time;
+	struct list_head list;
+};
+
 /*
  * Packet Parsing and Construction Functions
  */
