@@ -5,57 +5,45 @@
 
 obj-$(CONFIG_TQUIC) += tquic.o
 
+# Main TQUIC module
 tquic-y := \
 	tquic_main.o \
-	tquic_protocol.o \
-	tquic_connection.o \
-	tquic_stream.o \
-	tquic_packet.o \
-	tquic_frame.o \
+	tquic_proto.o \
 	tquic_socket.o \
+	tquic_netlink.o \
+	tquic_sysctl.o \
+	tquic_udp.o \
 	tquic_output.o \
 	tquic_input.o \
-	tquic_timer.o \
-	tquic_recovery.o
+	tquic_timer.o
 
 # Core protocol components
 obj-$(CONFIG_TQUIC_CORE) += tquic_core.o
 tquic_core-y := \
-	core/protocol.o \
+	core/varint.o \
 	core/connection.o \
 	core/stream.o \
 	core/frame.o \
 	core/packet.o \
 	core/ack.o \
-	core/flow_control.o
+	core/flow_control.o \
+	core/transport_params.o \
+	core/cid.o
 
 # WAN Bonding components
 obj-$(CONFIG_TQUIC_WAN_BONDING) += tquic_bond.o
 tquic_bond-y := \
-	bond/bonding.o \
-	bond/interface.o \
-	bond/path.o \
-	bond/failover.o \
-	bond/aggregation.o \
-	bond/migration.o
+	bond/bonding.o
 
 # Path Manager
 obj-$(CONFIG_TQUIC_PATH_MANAGER) += tquic_pm.o
 tquic_pm-y := \
-	pm/path_manager.o \
-	pm/path_probe.o \
-	pm/path_quality.o \
-	pm/path_selection.o
+	pm/path_manager.o
 
 # Packet Scheduler
 obj-$(CONFIG_TQUIC_SCHEDULER) += tquic_sched.o
 tquic_sched-y := \
 	sched/scheduler.o \
-	sched/sched_rr.o \
-	sched/sched_wrr.o \
-	sched/sched_minrtt.o \
-	sched/sched_redundant.o \
-	sched/sched_blest.o \
 	sched/reorder.o
 
 # Congestion Control
@@ -69,24 +57,25 @@ tquic_bbr-y := cong/bbr.o
 tquic_copa-y := cong/copa.o
 tquic_westwood-y := cong/westwood.o
 
+# Coupled congestion control for multipath
+obj-$(CONFIG_TQUIC_WAN_BONDING) += tquic_coupled.o
+tquic_coupled-y := cong/coupled.o
+
 # Crypto support
 obj-$(CONFIG_TQUIC_CRYPTO) += tquic_crypto.o
 tquic_crypto-y := \
 	crypto/tls.o \
-	crypto/keys.o \
-	crypto/cipher.o \
-	crypto/handshake.o
+	crypto/header_protection.o
 
-# Diagnostics
-obj-$(CONFIG_TQUIC_DIAG) += tquic_diag.o
-
-# Debugging
-tquic-$(CONFIG_TQUIC_DEBUGFS) += debugfs.o
+# IPv6 Support
+tquic-$(CONFIG_TQUIC_IPV6) += tquic_ipv6.o
 
 # KUnit tests
 obj-$(CONFIG_TQUIC_KUNIT_TEST) += tquic_test.o
 tquic_test-y := \
-	test/protocol_test.o \
-	test/connection_test.o \
-	test/path_test.o \
-	test/scheduler_test.o
+	test/varint_test.o \
+	test/packet_test.o \
+	test/frame_test.o \
+	test/flow_control_test.o \
+	test/scheduler_test.o \
+	test/transport_params_test.o

@@ -198,16 +198,23 @@ int tquic_connect(struct sock *sk, struct sockaddr *addr, int addr_len)
 	if (ret < 0)
 		return ret;
 
-	conn->state = TQUIC_CONN_CONNECTING;
+	/* Initialize the connection state machine for client mode */
+	ret = tquic_conn_client_connect(conn, addr);
+	if (ret < 0)
+		return ret;
+
 	inet_sk_set_state(sk, TCP_SYN_SENT);
 
-	/* TODO: Initiate QUIC handshake */
+	/*
+	 * The actual handshake will be completed asynchronously.
+	 * For now, we simulate immediate connection for testing.
+	 * In production, the state transition to CONNECTED happens
+	 * when the handshake completes via tquic_conn_process_handshake().
+	 */
+	if (conn->state == TQUIC_CONN_CONNECTED)
+		inet_sk_set_state(sk, TCP_ESTABLISHED);
 
-	/* For now, simulate immediate connection */
-	conn->state = TQUIC_CONN_CONNECTED;
-	inet_sk_set_state(sk, TCP_ESTABLISHED);
-
-	pr_debug("tquic: connected\n");
+	pr_debug("tquic: client connection initiated\n");
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tquic_connect);
@@ -253,8 +260,36 @@ static int tquic_accept_socket(struct socket *sock, struct socket *newsock,
 
 int tquic_accept(struct sock *sk, struct sock *newsk, int flags, bool kern)
 {
-	/* TODO: Implement accept from queue */
-	return -EOPNOTSUPP;
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_sock *new_tsk;
+	struct tquic_connection *new_conn;
+
+	/* Check if we're in listen state */
+	if (sk->sk_state != TCP_LISTEN)
+		return -EINVAL;
+
+	/* Check accept queue */
+	if (list_empty(&tsk->accept_queue)) {
+		if (flags & O_NONBLOCK)
+			return -EAGAIN;
+		/* TODO: Wait for incoming connection */
+		return -EAGAIN;
+	}
+
+	/* Get connection from accept queue */
+	/* TODO: Implement proper accept queue handling */
+
+	/* For now, create a new connection */
+	new_tsk = tquic_sk(newsk);
+	new_conn = tquic_conn_create(newsk, GFP_KERNEL);
+	if (!new_conn)
+		return -ENOMEM;
+
+	new_tsk->conn = new_conn;
+	inet_sk_set_state(newsk, TCP_ESTABLISHED);
+
+	pr_debug("tquic: accepted connection\n");
+	return 0;
 }
 EXPORT_SYMBOL_GPL(tquic_accept);
 
@@ -329,14 +364,17 @@ static int tquic_shutdown(struct socket *sock, int how)
 {
 	struct sock *sk = sock->sk;
 	struct tquic_sock *tsk = tquic_sk(sk);
+	int ret = 0;
 
-	if (tsk->conn)
-		tsk->conn->state = TQUIC_CONN_CLOSING;
+	if (tsk->conn && tsk->conn->state == TQUIC_CONN_CONNECTED) {
+		/* Use graceful shutdown via state machine */
+		ret = tquic_conn_shutdown(tsk->conn);
+	}
 
 	if ((how & SEND_SHUTDOWN) && (how & RCV_SHUTDOWN))
 		inet_sk_set_state(sk, TCP_CLOSE);
 
-	return 0;
+	return ret;
 }
 
 /*
@@ -347,7 +385,14 @@ int tquic_close(struct sock *sk, long timeout)
 	struct tquic_sock *tsk = tquic_sk(sk);
 
 	if (tsk->conn) {
-		tsk->conn->state = TQUIC_CONN_CLOSED;
+		/*
+		 * If we're still connected, initiate graceful close.
+		 * The connection close will proceed through CLOSING -> DRAINING -> CLOSED.
+		 */
+		if (tsk->conn->state == TQUIC_CONN_CONNECTED ||
+		    tsk->conn->state == TQUIC_CONN_CONNECTING) {
+			tquic_conn_close_with_error(tsk->conn, 0x00, NULL);
+		}
 	}
 
 	inet_sk_set_state(sk, TCP_CLOSE);
