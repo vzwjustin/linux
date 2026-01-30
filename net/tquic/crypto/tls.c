@@ -69,6 +69,21 @@ struct tquic_keys {
 	bool valid;
 };
 
+/* Forward declaration for header protection context */
+struct tquic_hp_ctx;
+
+/* Header protection context allocation/free (from header_protection.c) */
+extern struct tquic_hp_ctx *tquic_hp_ctx_alloc(void);
+extern void tquic_hp_ctx_free(struct tquic_hp_ctx *ctx);
+extern int tquic_hp_set_key(struct tquic_hp_ctx *ctx, int level,
+			    int direction, const u8 *key, size_t key_len, u16 cipher);
+extern void tquic_hp_set_level(struct tquic_hp_ctx *ctx, int read_level, int write_level);
+extern int tquic_hp_protect(struct tquic_hp_ctx *ctx, u8 *packet,
+			    size_t packet_len, size_t pn_offset);
+extern int tquic_hp_unprotect(struct tquic_hp_ctx *ctx, u8 *packet,
+			      size_t packet_len, size_t pn_offset,
+			      u8 *pn_len, u8 *key_phase);
+
 /* Crypto state per connection */
 struct tquic_crypto_state {
 	/* Cipher suite */
@@ -90,6 +105,9 @@ struct tquic_crypto_state {
 	struct crypto_aead *aead;
 	struct crypto_skcipher *hp_cipher;
 	struct crypto_shash *hash;
+
+	/* Header protection context */
+	struct tquic_hp_ctx *hp_ctx;
 
 	/* Handshake transcript */
 	u8 *transcript;
@@ -229,6 +247,40 @@ static int tquic_derive_keys(struct tquic_crypto_state *crypto,
 		return ret;
 
 	keys->valid = true;
+	return 0;
+}
+
+/*
+ * Set up header protection keys in the HP context after derivation
+ */
+static int tquic_setup_hp_keys(struct tquic_crypto_state *crypto,
+			       enum tquic_enc_level level)
+{
+	struct tquic_keys *read_keys = &crypto->read_keys[level];
+	struct tquic_keys *write_keys = &crypto->write_keys[level];
+	int ret;
+
+	if (!crypto->hp_ctx)
+		return -EINVAL;
+
+	/* Set read HP key */
+	if (read_keys->valid) {
+		ret = tquic_hp_set_key(crypto->hp_ctx, level, 0,
+				       read_keys->hp_key, read_keys->key_len,
+				       crypto->cipher_suite);
+		if (ret)
+			return ret;
+	}
+
+	/* Set write HP key */
+	if (write_keys->valid) {
+		ret = tquic_hp_set_key(crypto->hp_ctx, level, 1,
+				       write_keys->hp_key, write_keys->key_len,
+				       crypto->cipher_suite);
+		if (ret)
+			return ret;
+	}
+
 	return 0;
 }
 
@@ -450,6 +502,17 @@ struct tquic_crypto_state *tquic_crypto_init(const struct tquic_cid *dcid,
 		return NULL;
 	}
 
+	/* Allocate header protection context */
+	crypto->hp_ctx = tquic_hp_ctx_alloc();
+	if (!crypto->hp_ctx) {
+		pr_err("tquic_crypto: failed to allocate HP context\n");
+		crypto_free_skcipher(crypto->hp_cipher);
+		crypto_free_shash(crypto->hash);
+		crypto_free_aead(crypto->aead);
+		kfree(crypto);
+		return NULL;
+	}
+
 	/* Set AEAD auth tag length */
 	crypto_aead_setauthsize(crypto->aead, 16);
 
@@ -461,10 +524,21 @@ struct tquic_crypto_state *tquic_crypto_init(const struct tquic_cid *dcid,
 		return NULL;
 	}
 
+	/* Set up initial HP keys */
+	ret = tquic_setup_hp_keys(crypto, TQUIC_ENC_INITIAL);
+	if (ret) {
+		pr_err("tquic_crypto: failed to set up initial HP keys\n");
+		tquic_crypto_cleanup(crypto);
+		return NULL;
+	}
+
 	crypto->read_level = TQUIC_ENC_INITIAL;
 	crypto->write_level = TQUIC_ENC_INITIAL;
 
-	pr_debug("tquic_crypto: initialized crypto state\n");
+	/* Sync HP context levels */
+	tquic_hp_set_level(crypto->hp_ctx, TQUIC_ENC_INITIAL, TQUIC_ENC_INITIAL);
+
+	pr_debug("tquic_crypto: initialized crypto state with HP\n");
 
 	return crypto;
 }
@@ -477,6 +551,10 @@ void tquic_crypto_cleanup(struct tquic_crypto_state *crypto)
 {
 	if (!crypto)
 		return;
+
+	/* Free header protection context */
+	if (crypto->hp_ctx)
+		tquic_hp_ctx_free(crypto->hp_ctx);
 
 	if (crypto->aead && !IS_ERR(crypto->aead))
 		crypto_free_aead(crypto->aead);
@@ -500,6 +578,150 @@ bool tquic_crypto_handshake_complete(struct tquic_crypto_state *crypto)
 	return crypto ? crypto->handshake_complete : false;
 }
 EXPORT_SYMBOL_GPL(tquic_crypto_handshake_complete);
+
+/*
+ * Apply header protection to an outgoing packet
+ */
+int tquic_crypto_protect_header(struct tquic_crypto_state *crypto,
+				u8 *packet, size_t packet_len,
+				size_t pn_offset)
+{
+	if (!crypto || !crypto->hp_ctx)
+		return -EINVAL;
+
+	return tquic_hp_protect(crypto->hp_ctx, packet, packet_len, pn_offset);
+}
+EXPORT_SYMBOL_GPL(tquic_crypto_protect_header);
+
+/*
+ * Remove header protection from an incoming packet
+ */
+int tquic_crypto_unprotect_header(struct tquic_crypto_state *crypto,
+				  u8 *packet, size_t packet_len,
+				  size_t pn_offset, u8 *pn_len,
+				  u8 *key_phase)
+{
+	if (!crypto || !crypto->hp_ctx)
+		return -EINVAL;
+
+	return tquic_hp_unprotect(crypto->hp_ctx, packet, packet_len,
+				  pn_offset, pn_len, key_phase);
+}
+EXPORT_SYMBOL_GPL(tquic_crypto_unprotect_header);
+
+/*
+ * Get the header protection context (for direct access if needed)
+ */
+struct tquic_hp_ctx *tquic_crypto_get_hp_ctx(struct tquic_crypto_state *crypto)
+{
+	return crypto ? crypto->hp_ctx : NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_crypto_get_hp_ctx);
+
+/*
+ * Update encryption level and sync HP context
+ */
+void tquic_crypto_set_level(struct tquic_crypto_state *crypto,
+			    enum tquic_enc_level read_level,
+			    enum tquic_enc_level write_level)
+{
+	if (!crypto)
+		return;
+
+	crypto->read_level = read_level;
+	crypto->write_level = write_level;
+
+	/* Sync HP context levels */
+	if (crypto->hp_ctx)
+		tquic_hp_set_level(crypto->hp_ctx, read_level, write_level);
+}
+EXPORT_SYMBOL_GPL(tquic_crypto_set_level);
+
+/*
+ * Install keys for a new encryption level
+ * This is called when TLS provides new secrets (e.g., after ClientHello/ServerHello)
+ */
+int tquic_crypto_install_keys(struct tquic_crypto_state *crypto,
+			      enum tquic_enc_level level,
+			      const u8 *read_secret, size_t read_secret_len,
+			      const u8 *write_secret, size_t write_secret_len)
+{
+	struct tquic_keys *read_keys = &crypto->read_keys[level];
+	struct tquic_keys *write_keys = &crypto->write_keys[level];
+	int ret;
+
+	if (!crypto || level >= TQUIC_ENC_LEVEL_COUNT)
+		return -EINVAL;
+
+	/* Set up read keys */
+	if (read_secret && read_secret_len > 0) {
+		memcpy(read_keys->secret, read_secret,
+		       min_t(size_t, read_secret_len, TQUIC_SECRET_MAX_LEN));
+		read_keys->secret_len = min_t(size_t, read_secret_len,
+					      TQUIC_SECRET_MAX_LEN);
+
+		/* Determine key/iv lengths based on cipher suite */
+		switch (crypto->cipher_suite) {
+		case TLS_AES_128_GCM_SHA256:
+			read_keys->key_len = 16;
+			read_keys->iv_len = 12;
+			break;
+		case TLS_AES_256_GCM_SHA384:
+			read_keys->key_len = 32;
+			read_keys->iv_len = 12;
+			break;
+		case TLS_CHACHA20_POLY1305_SHA256:
+			read_keys->key_len = 32;
+			read_keys->iv_len = 12;
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		ret = tquic_derive_keys(crypto, read_keys);
+		if (ret)
+			return ret;
+	}
+
+	/* Set up write keys */
+	if (write_secret && write_secret_len > 0) {
+		memcpy(write_keys->secret, write_secret,
+		       min_t(size_t, write_secret_len, TQUIC_SECRET_MAX_LEN));
+		write_keys->secret_len = min_t(size_t, write_secret_len,
+					       TQUIC_SECRET_MAX_LEN);
+
+		switch (crypto->cipher_suite) {
+		case TLS_AES_128_GCM_SHA256:
+			write_keys->key_len = 16;
+			write_keys->iv_len = 12;
+			break;
+		case TLS_AES_256_GCM_SHA384:
+			write_keys->key_len = 32;
+			write_keys->iv_len = 12;
+			break;
+		case TLS_CHACHA20_POLY1305_SHA256:
+			write_keys->key_len = 32;
+			write_keys->iv_len = 12;
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		ret = tquic_derive_keys(crypto, write_keys);
+		if (ret)
+			return ret;
+	}
+
+	/* Set up HP keys for this level */
+	ret = tquic_setup_hp_keys(crypto, level);
+	if (ret)
+		return ret;
+
+	pr_debug("tquic_crypto: installed keys for level %d\n", level);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_crypto_install_keys);
 
 MODULE_DESCRIPTION("TQUIC TLS 1.3 Crypto Integration");
 MODULE_LICENSE("GPL");

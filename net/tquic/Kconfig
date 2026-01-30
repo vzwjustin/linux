@@ -147,6 +147,35 @@ config TQUIC_CONG_WESTWOOD
 
 	  Recommended when bonding includes wireless/mobile paths.
 
+config TQUIC_CONG_COUPLED
+	tristate "TQUIC Coupled Multipath (OLIA/LIA/BALIA)"
+	default y
+	help
+	  Coupled multipath congestion control algorithms designed
+	  specifically for WAN bonding scenarios. These algorithms
+	  ensure fairness and efficiency when aggregating bandwidth
+	  across multiple paths.
+
+	  Includes:
+	    - LIA (Linked Increases Algorithm)
+	    - OLIA (Opportunistic Linked Increases) - RFC 6356
+	    - BALIA (Balanced Linked Adaptation)
+
+	  Features:
+	    - Shared bottleneck detection
+	    - Per-path subflow management
+	    - Fair resource pooling across paths
+	    - Integration with CUBIC/BBR per-path algorithms
+
+	  OLIA is recommended for most multipath scenarios as it
+	  provides good TCP-friendliness while allowing opportunistic
+	  use of uncongested paths.
+
+	  This is CRITICAL for true WAN bonding to ensure fairness
+	  with other flows sharing network bottlenecks.
+
+	  If using TQUIC for multipath WAN bonding, say Y.
+
 endif # TQUIC_CONG_ADVANCED
 
 choice
@@ -169,6 +198,15 @@ choice
 	config DEFAULT_TQUIC_WESTWOOD
 		bool "Westwood+" if TQUIC_CONG_WESTWOOD=y
 
+	config DEFAULT_TQUIC_OLIA
+		bool "OLIA (Coupled Multipath)" if TQUIC_CONG_COUPLED=y
+
+	config DEFAULT_TQUIC_LIA
+		bool "LIA (Coupled Multipath)" if TQUIC_CONG_COUPLED=y
+
+	config DEFAULT_TQUIC_BALIA
+		bool "BALIA (Coupled Multipath)" if TQUIC_CONG_COUPLED=y
+
 endchoice
 
 config DEFAULT_TQUIC_CONG
@@ -177,6 +215,9 @@ config DEFAULT_TQUIC_CONG
 	default "bbr" if DEFAULT_TQUIC_BBR
 	default "copa" if DEFAULT_TQUIC_COPA
 	default "westwood" if DEFAULT_TQUIC_WESTWOOD
+	default "olia" if DEFAULT_TQUIC_OLIA
+	default "lia" if DEFAULT_TQUIC_LIA
+	default "balia" if DEFAULT_TQUIC_BALIA
 	default "cubic"
 
 config TQUIC_CRYPTO
@@ -203,6 +244,22 @@ config TQUIC_IPV6
 	help
 	  Enable IPv6 support for TQUIC connections. This allows
 	  TQUIC to use IPv6 paths for WAN bonding alongside IPv4.
+
+	  Features include:
+	    - Full IPv6 socket operations with inet6_connection_sock
+	    - IPv6 address handling in paths with dual-stack support
+	    - IPv6 UDP tunnel integration
+	    - IPv6 flow label handling for consistent routing
+	    - IPv6 extension headers consideration
+	    - Path MTU Discovery for IPv6 (RFC 8201)
+	    - IPv6-specific setsockopt/getsockopt options
+	    - Happy Eyeballs support (RFC 8305) for preferring IPv6
+	      with fast IPv4 fallback when IPv6 is unavailable
+
+	  Happy Eyeballs (RFC 8305) enables TQUIC to prefer IPv6
+	  connections while quickly falling back to IPv4 if IPv6
+	  connectivity is broken or too slow, improving connection
+	  setup time in dual-stack environments.
 
 	  If unsure, say Y.
 

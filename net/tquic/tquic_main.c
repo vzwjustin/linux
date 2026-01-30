@@ -114,6 +114,9 @@ struct tquic_connection *tquic_conn_create(struct sock *sk, gfp_t gfp)
 	conn->scid.len = TQUIC_DEFAULT_CID_LEN;
 	conn->scid.seq_num = 0;
 
+	/* Initialize state machine pointer (allocated on demand) */
+	conn->state_machine = NULL;
+
 	/* Add to global table */
 	rhashtable_insert_fast(&tquic_conn_table, &conn->node, tquic_conn_params);
 
@@ -128,6 +131,10 @@ void tquic_conn_destroy(struct tquic_connection *conn)
 
 	if (!conn)
 		return;
+
+	/* Clean up state machine first */
+	if (conn->state_machine)
+		tquic_conn_state_cleanup(conn);
 
 	/* Remove from global table */
 	rhashtable_remove_fast(&tquic_conn_table, &conn->node, tquic_conn_params);
