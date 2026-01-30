@@ -139,6 +139,10 @@ static struct tquic_path *tquic_select_roundrobin(struct tquic_bond_state *bond,
 	u32 idx = 0;
 	u32 target;
 
+	/* Guard against division by zero when no paths exist */
+	if (unlikely(conn->num_paths == 0))
+		return conn->active_path;
+
 	target = bond->rr_counter++ % conn->num_paths;
 
 	list_for_each_entry(path, &conn->paths, list) {

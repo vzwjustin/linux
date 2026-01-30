@@ -160,6 +160,7 @@ struct tquic_path_stats {
 
 /**
  * struct tquic_path - A network path for WAN bonding
+ * @conn: Parent connection (back-pointer for safe access)
  * @state: Current path state
  * @path_id: Unique identifier for this path
  * @local_addr: Local address for this path
@@ -178,6 +179,7 @@ struct tquic_path_stats {
  * @list: Connection's path list linkage
  */
 struct tquic_path {
+	struct tquic_connection *conn;
 	enum tquic_path_state state;
 	u32 path_id;
 
@@ -278,9 +280,7 @@ struct tquic_conn_stats {
  * @data_received: Total data received
  * @stats: Connection statistics
  * @idle_timeout: Idle timeout in ms
- * @idle_timer: Idle timeout timer
- * @ack_timer: Delayed ACK timer
- * @loss_timer: Loss detection timer
+ * @timer_state: Unified timer and recovery state (idle, ack, loss, PTO)
  * @crypto_state: TLS/crypto state
  * @scheduler: Packet scheduler
  * @lock: Connection lock
@@ -315,13 +315,8 @@ struct tquic_connection {
 
 	struct tquic_conn_stats stats;
 
-	/* Timers */
+	/* Timers - managed via timer_state for unified timer/recovery handling */
 	u32 idle_timeout;
-	struct timer_list idle_timer;
-	struct timer_list ack_timer;
-	struct timer_list loss_timer;
-
-	/* Timer and recovery system */
 	struct tquic_timer_state *timer_state;
 
 	/* Crypto */

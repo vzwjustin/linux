@@ -27,6 +27,8 @@
 #include <linux/random.h>
 #include <linux/jhash.h>
 #include <linux/rhashtable.h>
+#include <crypto/aead.h>
+#include <crypto/gcm.h>
 #include <net/sock.h>
 #include <net/udp.h>
 #include <net/tquic.h>
@@ -199,6 +201,16 @@ static const struct rhashtable_params cid_hash_params = {
 	.head_offset = offsetof(struct tquic_cid_entry, hash_node),
 	.automatic_shrinking = true,
 };
+
+/* Retry token AEAD encryption state */
+#define TQUIC_RETRY_TOKEN_KEY_LEN	16
+#define TQUIC_RETRY_TOKEN_IV_LEN	12
+#define TQUIC_RETRY_TOKEN_TAG_LEN	16
+
+static u8 tquic_retry_token_key[TQUIC_RETRY_TOKEN_KEY_LEN];
+static struct crypto_aead *tquic_retry_aead;
+static DEFINE_SPINLOCK(tquic_retry_aead_lock);
+static bool tquic_retry_aead_initialized;
 
 /* Forward declarations */
 static void tquic_conn_enter_closing(struct tquic_connection *conn,
@@ -811,8 +823,13 @@ int tquic_generate_retry_token(struct tquic_connection *conn,
 			       u8 *token, u32 *token_len)
 {
 	u8 plaintext[128];
+	u8 nonce[TQUIC_RETRY_TOKEN_IV_LEN];
 	u8 *p = plaintext;
+	struct aead_request *req;
+	struct scatterlist sg[2];
+	size_t plaintext_len;
 	ktime_t now = ktime_get();
+	int ret;
 
 	/* Token format: timestamp || original_dcid || client_addr_hash */
 	memcpy(p, &now, sizeof(now));
@@ -837,10 +854,56 @@ int tquic_generate_retry_token(struct tquic_connection *conn,
 		p += sizeof(hash);
 	}
 
-	/* TODO: Encrypt token with AEAD */
-	/* For now, just copy plaintext (insecure, for structure only) */
-	memcpy(token, plaintext, p - plaintext);
-	*token_len = p - plaintext;
+	plaintext_len = p - plaintext;
+
+	/* Check if AEAD is initialized */
+	if (!tquic_retry_aead_initialized || !tquic_retry_aead) {
+		pr_warn_once("tquic: retry token AEAD not initialized\n");
+		return -ENOKEY;
+	}
+
+	/* Generate random nonce */
+	get_random_bytes(nonce, TQUIC_RETRY_TOKEN_IV_LEN);
+
+	/* Output format: nonce || ciphertext || auth_tag */
+	memcpy(token, nonce, TQUIC_RETRY_TOKEN_IV_LEN);
+
+	/* Allocate AEAD request */
+	req = aead_request_alloc(tquic_retry_aead, GFP_ATOMIC);
+	if (!req)
+		return -ENOMEM;
+
+	spin_lock(&tquic_retry_aead_lock);
+
+	ret = crypto_aead_setkey(tquic_retry_aead, tquic_retry_token_key,
+				 TQUIC_RETRY_TOKEN_KEY_LEN);
+	if (ret) {
+		spin_unlock(&tquic_retry_aead_lock);
+		aead_request_free(req);
+		return ret;
+	}
+
+	/* Copy plaintext to output buffer after nonce for in-place encryption */
+	memcpy(token + TQUIC_RETRY_TOKEN_IV_LEN, plaintext, plaintext_len);
+
+	/* Set up scatterlist: ciphertext buffer includes space for auth tag */
+	sg_init_one(sg, token + TQUIC_RETRY_TOKEN_IV_LEN,
+		    plaintext_len + TQUIC_RETRY_TOKEN_TAG_LEN);
+
+	aead_request_set_crypt(req, sg, sg, plaintext_len, nonce);
+	aead_request_set_ad(req, 0);
+
+	ret = crypto_aead_encrypt(req);
+
+	spin_unlock(&tquic_retry_aead_lock);
+	aead_request_free(req);
+
+	if (ret)
+		return ret;
+
+	/* Total length: nonce + ciphertext + auth_tag */
+	*token_len = TQUIC_RETRY_TOKEN_IV_LEN + plaintext_len +
+		     TQUIC_RETRY_TOKEN_TAG_LEN;
 
 	return 0;
 }
@@ -863,16 +926,74 @@ int tquic_validate_retry_token(struct tquic_connection *conn,
 			       struct tquic_cid *original_dcid)
 {
 	struct tquic_conn_state *cs = conn->state_machine;
-	const u8 *p = token;
+	u8 plaintext[128];
+	u8 nonce[TQUIC_RETRY_TOKEN_IV_LEN];
+	struct aead_request *req;
+	struct scatterlist sg[2];
+	const u8 *p;
+	size_t ciphertext_len;
 	ktime_t timestamp, now;
 	u64 age_ms;
 	u32 expected_hash, token_hash;
 	u8 dcid_len;
+	int ret;
 
-	if (!cs || token_len < sizeof(ktime_t) + 2)
+	if (!cs)
 		return -EINVAL;
 
-	/* TODO: Decrypt token first */
+	/* Minimum token length: nonce + timestamp + dcid_len + hash + tag */
+	if (token_len < TQUIC_RETRY_TOKEN_IV_LEN + sizeof(ktime_t) + 1 +
+			sizeof(u32) + TQUIC_RETRY_TOKEN_TAG_LEN)
+		return -EINVAL;
+
+	/* Check if AEAD is initialized */
+	if (!tquic_retry_aead_initialized || !tquic_retry_aead) {
+		pr_warn_once("tquic: retry token AEAD not initialized\n");
+		return -ENOKEY;
+	}
+
+	/* Extract nonce from beginning of token */
+	memcpy(nonce, token, TQUIC_RETRY_TOKEN_IV_LEN);
+
+	/* Ciphertext length excludes nonce */
+	ciphertext_len = token_len - TQUIC_RETRY_TOKEN_IV_LEN;
+
+	/* Allocate AEAD request */
+	req = aead_request_alloc(tquic_retry_aead, GFP_ATOMIC);
+	if (!req)
+		return -ENOMEM;
+
+	spin_lock(&tquic_retry_aead_lock);
+
+	ret = crypto_aead_setkey(tquic_retry_aead, tquic_retry_token_key,
+				 TQUIC_RETRY_TOKEN_KEY_LEN);
+	if (ret) {
+		spin_unlock(&tquic_retry_aead_lock);
+		aead_request_free(req);
+		return ret;
+	}
+
+	/* Copy ciphertext to plaintext buffer for in-place decryption */
+	memcpy(plaintext, token + TQUIC_RETRY_TOKEN_IV_LEN, ciphertext_len);
+
+	/* Set up scatterlist */
+	sg_init_one(sg, plaintext, ciphertext_len);
+
+	aead_request_set_crypt(req, sg, sg, ciphertext_len, nonce);
+	aead_request_set_ad(req, 0);
+
+	ret = crypto_aead_decrypt(req);
+
+	spin_unlock(&tquic_retry_aead_lock);
+	aead_request_free(req);
+
+	if (ret) {
+		pr_debug("tquic: retry token decryption failed\n");
+		return -EINVAL;
+	}
+
+	/* Parse decrypted plaintext */
+	p = plaintext;
 
 	/* Extract timestamp */
 	memcpy(&timestamp, p, sizeof(timestamp));
@@ -1928,20 +2049,17 @@ EXPORT_SYMBOL_GPL(tquic_conn_on_packet_received);
  * tquic_conn_lookup_by_cid - Find connection by CID
  * @cid: The connection ID to look up
  *
+ * Delegates to tquic_cid_lookup() which maintains the authoritative
+ * CID-to-connection mapping with proper reference counting.
+ *
  * Returns the connection owning this CID, or NULL.
  */
 struct tquic_connection *tquic_conn_lookup_by_cid(const struct tquic_cid *cid)
 {
-	struct tquic_cid_entry *entry;
-
-	entry = rhashtable_lookup_fast(&cid_lookup_table, cid, cid_hash_params);
-	if (entry) {
-		/* Walk back to connection via list */
-		/* TODO: Store connection pointer in entry */
-		return NULL;
-	}
-
-	return NULL;
+	/* Delegate to the CID manager's lookup which has the proper
+	 * connection back-pointer and reference counting.
+	 */
+	return tquic_cid_lookup(cid);
 }
 EXPORT_SYMBOL_GPL(tquic_conn_lookup_by_cid);
 
@@ -2024,12 +2142,43 @@ static int __init tquic_connection_init(void)
 		return ret;
 	}
 
+	/* Initialize retry token AEAD cipher (AES-128-GCM) */
+	tquic_retry_aead = crypto_alloc_aead("gcm(aes)", 0, 0);
+	if (IS_ERR(tquic_retry_aead)) {
+		pr_err("tquic: failed to allocate retry token AEAD\n");
+		ret = PTR_ERR(tquic_retry_aead);
+		tquic_retry_aead = NULL;
+		rhashtable_destroy(&cid_lookup_table);
+		return ret;
+	}
+
+	ret = crypto_aead_setauthsize(tquic_retry_aead, TQUIC_RETRY_TOKEN_TAG_LEN);
+	if (ret) {
+		pr_err("tquic: failed to set AEAD auth size\n");
+		crypto_free_aead(tquic_retry_aead);
+		tquic_retry_aead = NULL;
+		rhashtable_destroy(&cid_lookup_table);
+		return ret;
+	}
+
+	/* Generate random key for retry token encryption */
+	get_random_bytes(tquic_retry_token_key, TQUIC_RETRY_TOKEN_KEY_LEN);
+	tquic_retry_aead_initialized = true;
+
 	pr_info("tquic: connection state machine initialized\n");
 	return 0;
 }
 
 static void __exit tquic_connection_exit(void)
 {
+	/* Cleanup retry token AEAD */
+	if (tquic_retry_aead) {
+		tquic_retry_aead_initialized = false;
+		crypto_free_aead(tquic_retry_aead);
+		tquic_retry_aead = NULL;
+	}
+	memzero_explicit(tquic_retry_token_key, sizeof(tquic_retry_token_key));
+
 	rhashtable_destroy(&cid_lookup_table);
 	pr_info("tquic: connection state machine cleanup complete\n");
 }
