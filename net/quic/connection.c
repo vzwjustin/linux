@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/bits.h>
 #include <linux/hashtable.h>
 #include <linux/random.h>
 #include <linux/spinlock.h>
@@ -1116,11 +1117,10 @@ int quic_conn_consume_flow_credit(struct quic_connection *conn, u64 bytes)
 
 	spin_lock_bh(&conn->flow.lock);
 
-	if (conn->flow.data_sent + bytes > conn->flow.max_data_remote) {
+	if (conn->flow.data_sent + bytes > conn->flow.max_data_remote)
 		ret = -EAGAIN;
-	} else {
+	else
 		conn->flow.data_sent += bytes;
-	}
 
 	spin_unlock_bh(&conn->flow.lock);
 
@@ -1856,15 +1856,13 @@ int quic_conn_on_ack_received(struct quic_connection *conn, u64 largest_acked,
 			continue;
 
 		/* Calculate RTT for the largest acknowledged packet */
-		if (pkt->packet_number == largest_acked && pkt->ack_eliciting) {
+		if (pkt->packet_number == largest_acked && pkt->ack_eliciting)
 			latest_rtt = ktime_us_delta(now, pkt->sent_time);
-		}
 
 		/* Mark as acknowledged */
-		if (pkt->in_flight) {
+		if (pkt->in_flight)
 			quic_cc_on_packet_acked(&conn->cc, pkt->sent_bytes,
 						&conn->rtt);
-		}
 
 		list_del(&pkt->list_node);
 		kmem_cache_free(quic_sent_pkt_cache, pkt);
