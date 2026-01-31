@@ -332,4 +332,43 @@ enum tquic_nl_groups {
 /* Connection timeout (fixed per CONTEXT.md) */
 #define TQUIC_HANDSHAKE_TIMEOUT_MS	30000  /* Fixed 30 second timeout */
 
+/*
+ * TQUIC Stream ioctls
+ *
+ * Use ioctl on connection socket to create stream file descriptors.
+ * Stream fds are first-class file descriptors supporting poll/epoll/select.
+ *
+ * Note: TQUIC uses a streams-only I/O model. sendmsg/recvmsg work on
+ * stream sockets, not the connection socket. The connection socket is
+ * used for control (connect, listen, accept, stream creation).
+ */
+
+/* ioctl magic number for TQUIC */
+#define TQUIC_IOC_MAGIC		'Q'
+
+/**
+ * struct tquic_stream_args - Arguments for TQUIC_NEW_STREAM ioctl
+ * @stream_id: OUT - Assigned stream ID after successful creation
+ * @flags: IN - Stream type flags (TQUIC_STREAM_BIDI or TQUIC_STREAM_UNIDI)
+ * @reserved: Reserved for future use, must be 0
+ *
+ * On success, the ioctl returns the new stream's file descriptor.
+ * The stream_id field is populated with the assigned QUIC stream ID.
+ */
+struct tquic_stream_args {
+	__u64 stream_id;	/* OUT: assigned stream ID */
+	__u32 flags;		/* IN: TQUIC_STREAM_BIDI or TQUIC_STREAM_UNIDI */
+	__u32 reserved;		/* Must be 0 */
+};
+
+/* Create new stream, returns fd on success */
+#define TQUIC_NEW_STREAM	_IOWR(TQUIC_IOC_MAGIC, 1, struct tquic_stream_args)
+
+/* Stream type flags */
+#define TQUIC_STREAM_BIDI	0x00	/* Bidirectional stream (default) */
+#define TQUIC_STREAM_UNIDI	0x01	/* Unidirectional stream (send-only) */
+
+/* Stream limit sockopt (read-only) */
+#define TQUIC_STREAMS_AVAILABLE	60	/* Get number of streams that can be opened */
+
 #endif /* _UAPI_LINUX_TQUIC_H */
