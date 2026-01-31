@@ -653,6 +653,10 @@ void __exit tquic_proto_exit(void);
 int __init tquic_socket_init(void);
 void __exit tquic_socket_exit(void);
 
+/* Diagnostics (ss tool integration) */
+int __init tquic_diag_init(void);
+void __exit tquic_diag_exit(void);
+
 /*
  * Per-Network Namespace API
  *
