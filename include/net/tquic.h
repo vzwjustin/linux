@@ -335,8 +335,10 @@ struct tquic_connection {
 
 	/* Multi-path support for WAN bonding */
 	struct list_head paths;
+	spinlock_t paths_lock;		/* Protects paths list */
 	struct tquic_path *active_path;
 	u8 num_paths;
+	u8 max_paths;			/* Maximum paths allowed */
 
 	/* Stream management */
 	struct rb_root streams;
@@ -506,6 +508,15 @@ struct tquic_path *tquic_conn_get_path(struct tquic_connection *conn, u32 path_i
 void tquic_conn_migrate(struct tquic_connection *conn, struct tquic_path *new_path);
 struct tquic_connection *tquic_conn_lookup_by_token(struct net *net, u32 token);
 void tquic_conn_flush_paths(struct tquic_connection *conn);
+
+/* RCU-safe path operations (dynamic add/remove) */
+int tquic_conn_add_path_safe(struct tquic_connection *conn,
+			      struct sockaddr *local,
+			      struct sockaddr *remote);
+int tquic_conn_remove_path_safe(struct tquic_connection *conn,
+				 u32 path_id);
+struct tquic_path *tquic_conn_get_path_locked(struct tquic_connection *conn,
+					       u32 path_id);
 
 /* Path manager connection lifecycle */
 int tquic_pm_conn_init(struct tquic_connection *conn);
@@ -1042,6 +1053,10 @@ void __exit tquic_cid_exit(void);
 /* Bonding helper (used by path manager) */
 void tquic_bond_path_failed(struct tquic_connection *conn,
 			    struct tquic_path *path);
+void tquic_bond_interface_down(struct tquic_connection *conn,
+				struct net_device *dev);
+void tquic_bond_path_recovered(struct tquic_connection *conn,
+			       struct tquic_path *path);
 
 struct tquic_bond_state *tquic_bond_init(struct tquic_connection *conn);
 void tquic_bond_cleanup(struct tquic_bond_state *bond);

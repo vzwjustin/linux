@@ -520,6 +520,219 @@ void tquic_path_validate(struct tquic_connection *conn, struct tquic_path *path)
 EXPORT_SYMBOL_GPL(tquic_path_validate);
 
 /*
+ * Helper: Get path by ID with lock held
+ */
+struct tquic_path *tquic_conn_get_path_locked(struct tquic_connection *conn,
+					       u32 path_id)
+{
+	struct tquic_path *path;
+
+	list_for_each_entry(path, &conn->paths, list) {
+		if (path->path_id == path_id)
+			return path;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_conn_get_path_locked);
+
+/*
+ * Drain in-flight data from path before removal
+ */
+static void tquic_path_drain_data(struct tquic_connection *conn,
+				   struct tquic_path *path)
+{
+	/* Wait for pending retransmissions to complete or timeout
+	 * TODO: Full implementation requires packet tracking integration
+	 * For now, just wait a bounded time (5 seconds max) */
+	unsigned long timeout = jiffies + msecs_to_jiffies(5000);
+
+	pr_debug("tquic: draining data from path %u\n", path->path_id);
+
+	/* Simple wait - real implementation would check:
+	 * - No in-flight packets on this path
+	 * - All data migrated to other paths
+	 * - ACKs received or timeout expired */
+	while (time_before(jiffies, timeout)) {
+		/* Check if any data still in-flight */
+		if (path->stats.tx_packets == 0 ||
+		    path->stats.tx_packets == path->stats.rx_packets) {
+			pr_debug("tquic: path %u drain complete\n", path->path_id);
+			return;
+		}
+
+		msleep(100);
+	}
+
+	pr_debug("tquic: path %u drain timeout\n", path->path_id);
+}
+
+/*
+ * Initialize path structure
+ */
+static struct tquic_path *tquic_path_alloc(struct tquic_connection *conn,
+					    struct sockaddr *local,
+					    struct sockaddr *remote)
+{
+	struct tquic_path *path;
+	static atomic_t path_id_gen = ATOMIC_INIT(0);
+
+	path = kzalloc(sizeof(*path), GFP_KERNEL);
+	if (!path)
+		return NULL;
+
+	path->conn = conn;
+	path->path_id = atomic_inc_return(&path_id_gen);
+	path->state = TQUIC_PATH_UNUSED;
+	path->saved_state = TQUIC_PATH_UNUSED;
+
+	/* Copy addresses */
+	if (local)
+		memcpy(&path->local_addr, local,
+		       local->sa_family == AF_INET ?
+		       sizeof(struct sockaddr_in) :
+		       sizeof(struct sockaddr_in6));
+
+	if (remote)
+		memcpy(&path->remote_addr, remote,
+		       remote->sa_family == AF_INET ?
+		       sizeof(struct sockaddr_in) :
+		       sizeof(struct sockaddr_in6));
+
+	/* Initialize validation timer */
+	timer_setup(&path->validation.timer, tquic_path_validation_timeout, 0);
+
+	/* Initialize response queue */
+	skb_queue_head_init(&path->response.queue);
+	atomic_set(&path->response.count, 0);
+
+	/* Default MTU (will be updated via PMTU discovery) */
+	path->mtu = 1200;
+	path->priority = 0;
+	path->weight = 1;
+
+	INIT_LIST_HEAD(&path->list);
+
+	return path;
+}
+
+/*
+ * Initialize validation state for a path
+ */
+static void tquic_path_init_validation(struct tquic_path *path)
+{
+	path->validation.challenge_pending = false;
+	path->validation.retries = 0;
+	memset(path->validation.challenge_data, 0,
+	       sizeof(path->validation.challenge_data));
+}
+
+/*
+ * RCU-safe path addition
+ */
+int tquic_conn_add_path_safe(struct tquic_connection *conn,
+			       struct sockaddr *local,
+			       struct sockaddr *remote)
+{
+	struct tquic_path *path;
+	int ret;
+
+	if (!conn || !local || !remote)
+		return -EINVAL;
+
+	/* Check limits */
+	spin_lock_bh(&conn->paths_lock);
+	if (conn->num_paths >= conn->max_paths) {
+		spin_unlock_bh(&conn->paths_lock);
+		return -ENOSPC;
+	}
+	spin_unlock_bh(&conn->paths_lock);
+
+	/* Allocate path structure */
+	path = tquic_path_alloc(conn, local, remote);
+	if (!path)
+		return -ENOMEM;
+
+	/* Initialize validation state (timer, queue) */
+	tquic_path_init_validation(path);
+
+	/* Add to connection's path list with RCU */
+	spin_lock_bh(&conn->paths_lock);
+	list_add_tail_rcu(&path->list, &conn->paths);
+	conn->num_paths++;
+	spin_unlock_bh(&conn->paths_lock);
+
+	/* Start validation asynchronously */
+	ret = tquic_path_start_validation(conn, path);
+	if (ret < 0)
+		pr_debug("tquic: path validation start failed: %d\n", ret);
+
+	/* Emit event */
+	tquic_nl_path_event(conn, path, TQUIC_PM_EVENT_CREATED);
+
+	pr_info("tquic: added path %u (%pISpc -> %pISpc)\n",
+		path->path_id, &path->local_addr, &path->remote_addr);
+
+	return path->path_id;
+}
+EXPORT_SYMBOL_GPL(tquic_conn_add_path_safe);
+
+/*
+ * RCU-safe path removal
+ */
+int tquic_conn_remove_path_safe(struct tquic_connection *conn,
+				 u32 path_id)
+{
+	struct tquic_path *path;
+
+	if (!conn)
+		return -EINVAL;
+
+	spin_lock_bh(&conn->paths_lock);
+	path = tquic_conn_get_path_locked(conn, path_id);
+	if (!path) {
+		spin_unlock_bh(&conn->paths_lock);
+		return -ENOENT;
+	}
+
+	/* Don't remove the active path */
+	if (path == conn->active_path) {
+		spin_unlock_bh(&conn->paths_lock);
+		return -EBUSY;
+	}
+
+	/* Mark as closing to stop new data */
+	path->state = TQUIC_PATH_CLOSED;
+	spin_unlock_bh(&conn->paths_lock);
+
+	/* Drain in-flight data (wait for ACKs or timeout) */
+	tquic_path_drain_data(conn, path);
+
+	/* Emit removal event */
+	tquic_nl_path_event(conn, path, TQUIC_PM_EVENT_REMOVED);
+
+	/* Cancel validation timer */
+	del_timer_sync(&path->validation.timer);
+
+	/* Purge response queue */
+	skb_queue_purge(&path->response.queue);
+
+	/* Remove from list with RCU grace period */
+	spin_lock_bh(&conn->paths_lock);
+	list_del_rcu(&path->list);
+	conn->num_paths--;
+	spin_unlock_bh(&conn->paths_lock);
+
+	/* Free after RCU grace period */
+	kfree_rcu(path, rcu_head);
+
+	pr_info("tquic: removed path %u\n", path_id);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_conn_remove_path_safe);
+
+/*
  * Lookup connection by netlink token
  *
  * Stub for now - full implementation in connection management phase.
