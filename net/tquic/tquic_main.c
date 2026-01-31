@@ -621,12 +621,19 @@ static int __init tquic_init(void)
 	if (err)
 		goto err_proc;
 
+	/* Initialize inet_diag handler for ss tool */
+	err = tquic_diag_init();
+	if (err)
+		goto err_diag;
+
 	pr_info("tquic: TQUIC WAN bonding subsystem initialized\n");
 	pr_info("tquic: Default bond mode: %d, scheduler: %s, congestion: %s\n",
 		tquic_default_bond_mode, tquic_default_scheduler, tquic_default_cong);
 
 	return 0;
 
+err_diag:
+	tquic_proc_exit();
 err_proc:
 	tquic_sysctl_exit();
 err_sysctl:
@@ -647,6 +654,7 @@ static void __exit tquic_exit(void)
 {
 	pr_info("tquic: shutting down TQUIC WAN bonding subsystem\n");
 
+	tquic_diag_exit();
 	tquic_proc_exit();
 	tquic_sysctl_exit();
 	tquic_netlink_exit();
