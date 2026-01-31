@@ -45,6 +45,8 @@ tquic_bond-y := \
 # Path Manager
 obj-$(CONFIG_TQUIC_PATH_MANAGER) += tquic_pm.o
 tquic_pm-y := \
+	pm/pm_types.o \
+	pm/pm_kernel.o \
 	pm/path_manager.o
 
 # Packet Scheduler
