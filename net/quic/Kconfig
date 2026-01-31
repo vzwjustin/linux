@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+menuconfig QUIC
+	tristate "QUIC protocol support"
+	depends on INET
+	select CRYPTO
+	select CRYPTO_AES
+	select CRYPTO_GCM
+	select CRYPTO_SHA256
+	select CRYPTO_HMAC
+	help
+	  QUIC (RFC 9000) is a UDP-based multiplexed and secure transport
+	  protocol. This option enables QUIC protocol support in the kernel.
+
+	  If unsure, say N.
+
+if QUIC
+
+config TQUIC
+	bool "TQUIC multi-path support for WAN bonding"
+	default y
+	help
+	  Enable TQUIC extensions for multi-path transmission over multiple
+	  WAN interfaces. This allows bonding multiple network connections
+	  (e.g., Ethernet + Cellular) for increased bandwidth and reliability.
+
+	  If unsure, say Y.
+
+config TQUIC_SCHEDULER_ROUNDROBIN
+	bool "Round-robin scheduler"
+	default y
+	depends on TQUIC
+	help
+	  Round-robin packet scheduler distributes packets evenly across
+	  all available paths.
+
+config TQUIC_SCHEDULER_WEIGHTED
+	bool "Weighted scheduler"
+	default y
+	depends on TQUIC
+	help
+	  Weighted scheduler distributes packets based on configured
+	  weights for each path.
+
+config TQUIC_SCHEDULER_LOWLATENCY
+	bool "Low-latency scheduler"
+	default y
+	depends on TQUIC
+	help
+	  Low-latency scheduler always selects the path with the
+	  lowest measured RTT.
+
+config TQUIC_SCHEDULER_REDUNDANT
+	bool "Redundant scheduler"
+	default y
+	depends on TQUIC
+	help
+	  Redundant scheduler sends packets on multiple paths
+	  for maximum reliability.
+
+config TQUIC_SCHEDULER_ADAPTIVE
+	bool "Adaptive scheduler"
+	default y
+	depends on TQUIC
+	help
+	  Adaptive scheduler dynamically adjusts path selection
+	  based on current network conditions.
+
+config QUIC_DEBUG
+	bool "QUIC debugging"
+	depends on QUIC
+	help
+	  Enable QUIC debugging output. This creates entries in debugfs
+	  for inspecting QUIC connection state.
+
+endif # QUIC
