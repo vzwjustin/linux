@@ -315,6 +315,41 @@ void tquic_bonding_on_path_removed(void *ctx, struct tquic_path *path);
 
 /*
  * ============================================================================
+ * Reorder Buffer Integration
+ * ============================================================================
+ */
+
+/**
+ * tquic_bonding_update_rtt_spread - Update reorder timeout from path RTTs
+ * @bc: Bonding context
+ * @min_rtt_us: Minimum path RTT in microseconds
+ * @max_rtt_us: Maximum path RTT in microseconds
+ *
+ * Updates the reorder buffer gap timeout based on the RTT spread
+ * across paths. Timeout = 2 * (max_rtt - min_rtt) + 100ms margin.
+ *
+ * Call when path RTT measurements are updated.
+ */
+void tquic_bonding_update_rtt_spread(struct tquic_bonding_ctx *bc,
+				     u32 min_rtt_us, u32 max_rtt_us);
+
+/**
+ * tquic_bonding_get_reorder - Get reorder buffer for packet insertion
+ * @bc: Bonding context
+ *
+ * Returns reorder buffer if bonding is active, NULL otherwise.
+ * Caller must check for NULL before using.
+ */
+static inline struct tquic_reorder_buffer *
+tquic_bonding_get_reorder(struct tquic_bonding_ctx *bc)
+{
+	if (!bc || bc->state == TQUIC_BOND_SINGLE_PATH)
+		return NULL;
+	return bc->reorder;
+}
+
+/*
+ * ============================================================================
  * Statistics and Debugging
  * ============================================================================
  */

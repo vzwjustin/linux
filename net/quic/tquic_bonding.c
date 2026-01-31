@@ -28,6 +28,7 @@
 #include <linux/math64.h>
 
 #include "tquic_bonding.h"
+#include "tquic_reorder.h"
 
 /*
  * State name strings for debugging/logging
@@ -76,15 +77,10 @@ enum {
 };
 
 /*
- * Placeholder reorder buffer structure
- * Full implementation in Phase 05-02
+ * Global workqueue for reorder buffer timeout work
+ * Used by reorder buffer delayed_work
  */
-struct tquic_reorder_buffer {
-	spinlock_t lock;
-	size_t max_bytes;
-	size_t used_bytes;
-	/* Additional fields added in 05-02 */
-};
+static struct workqueue_struct *tquic_reorder_wq;
 
 /*
  * Global workqueue for async weight updates
@@ -141,17 +137,21 @@ static void tquic_bonding_count_paths(struct tquic_bonding_ctx *bc,
 static int tquic_bonding_alloc_reorder(struct tquic_bonding_ctx *bc)
 {
 	struct tquic_reorder_buffer *reorder;
+	int ret;
 
 	if (bc->reorder)
 		return 0;  /* Already allocated */
 
-	reorder = kzalloc(sizeof(*reorder), GFP_ATOMIC);
+	reorder = tquic_reorder_alloc(GFP_ATOMIC);
 	if (!reorder)
 		return -ENOMEM;
 
-	spin_lock_init(&reorder->lock);
-	reorder->max_bytes = bc->max_buffer_bytes;
-	reorder->used_bytes = 0;
+	ret = tquic_reorder_init(reorder, bc->max_buffer_bytes,
+				 tquic_reorder_wq, bc);
+	if (ret) {
+		kfree(reorder);
+		return ret;
+	}
 
 	bc->reorder = reorder;
 
@@ -176,10 +176,46 @@ static void tquic_bonding_free_reorder(struct tquic_bonding_ctx *bc)
 	/* Wait for any readers */
 	synchronize_rcu();
 
-	kfree(reorder);
+	/* Use proper destroy which handles pending work and buffered packets */
+	tquic_reorder_destroy(reorder);
 
 	pr_debug("freed reorder buffer\n");
 }
+
+/*
+ * Update reorder buffer timeout based on path RTT spread
+ * Called when path RTT measurements are updated
+ */
+void tquic_bonding_update_rtt_spread(struct tquic_bonding_ctx *bc,
+				     u32 min_rtt_us, u32 max_rtt_us)
+{
+	u32 rtt_spread_us;
+	u32 new_timeout_ms;
+
+	if (!bc || !bc->reorder)
+		return;
+
+	if (max_rtt_us < min_rtt_us)
+		return;
+
+	rtt_spread_us = max_rtt_us - min_rtt_us;
+
+	/*
+	 * Gap timeout formula: 2 * rtt_spread + 100ms margin
+	 * This handles the worst case where slow path packet arrives
+	 * after fast path has already delivered many packets.
+	 */
+	new_timeout_ms = (rtt_spread_us / 1000) * 2 + 100;
+
+	/* Update reorder buffer */
+	tquic_reorder_update_rtt(bc->reorder, min_rtt_us, true);
+	tquic_reorder_update_rtt(bc->reorder, max_rtt_us, false);
+	tquic_reorder_update_timeout(bc->reorder, new_timeout_ms);
+
+	pr_debug("updated RTT spread: min=%u max=%u spread=%u timeout=%ums\n",
+		 min_rtt_us, max_rtt_us, rtt_spread_us, new_timeout_ms);
+}
+EXPORT_SYMBOL_GPL(tquic_bonding_update_rtt_spread);
 
 /*
  * Transition to new state with logging
@@ -783,7 +819,15 @@ static int __init tquic_bonding_init_module(void)
 	tquic_bond_wq = alloc_workqueue("tquic_bond",
 					WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
 	if (!tquic_bond_wq) {
-		pr_err("failed to create workqueue\n");
+		pr_err("failed to create bond workqueue\n");
+		return -ENOMEM;
+	}
+
+	tquic_reorder_wq = alloc_workqueue("tquic_reorder",
+					   WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
+	if (!tquic_reorder_wq) {
+		pr_err("failed to create reorder workqueue\n");
+		destroy_workqueue(tquic_bond_wq);
 		return -ENOMEM;
 	}
 
@@ -793,6 +837,9 @@ static int __init tquic_bonding_init_module(void)
 
 static void __exit tquic_bonding_exit_module(void)
 {
+	if (tquic_reorder_wq)
+		destroy_workqueue(tquic_reorder_wq);
+
 	if (tquic_bond_wq)
 		destroy_workqueue(tquic_bond_wq);
 
