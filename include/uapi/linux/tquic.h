@@ -27,6 +27,20 @@
 #define TQUIC_INFO		7   /* Connection info (read-only) */
 #define TQUIC_CONGESTION	8   /* Congestion control algorithm */
 #define TQUIC_SCHEDULER		9   /* Path scheduler algorithm */
+
+/*
+ * SO_TQUIC_SCHEDULER - Set scheduler name before connect()
+ *
+ * Used with setsockopt(SOL_TQUIC, SO_TQUIC_SCHEDULER, name, len).
+ * The value is a null-terminated string naming the scheduler.
+ *
+ * Per CONTEXT.md: Scheduler is locked at connection establishment
+ * and cannot be changed mid-connection. Setting after connect()
+ * returns -EISCONN.
+ *
+ * Available schedulers can be queried via /proc/net/tquic/schedulers.
+ */
+#define SO_TQUIC_SCHEDULER	TQUIC_SCHEDULER
 #define TQUIC_IDLE_TIMEOUT	10  /* Idle timeout in ms */
 #define TQUIC_MAX_DATA		11  /* Maximum data per connection */
 #define TQUIC_MAX_STREAM_DATA	12  /* Maximum data per stream */

@@ -24,6 +24,12 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <net/sock.h>
+#include <net/net_namespace.h>
+#include <net/netns/tquic.h>
+#include <net/tquic.h>
+
+/* Public scheduler API */
+#include "tquic_sched.h"
 
 /* Failover integration for retransmit queue priority */
 #include "tquic_failover.h"
@@ -439,11 +445,18 @@ EXPORT_SYMBOL_GPL(tquic_sched_get_available);
 
 /*
  * Set scheduler for a connection
+ *
+ * Per CONTEXT.md: "Scheduler locked at connection establishment,
+ * cannot change mid-connection"
  */
 int tquic_sched_set(struct tquic_connection *conn, const char *name)
 {
 	struct tquic_scheduler_ops *old_sched, *new_sched;
 	int ret = 0;
+
+	/* Cannot change scheduler after connection established */
+	if (conn->state != TQUIC_CONN_IDLE)
+		return -EISCONN;
 
 	rcu_read_lock();
 	new_sched = tquic_sched_find(name);
@@ -2236,6 +2249,241 @@ EXPORT_SYMBOL_GPL(tquic_get_path_stats);
  * ========================================================================= */
 
 static char tquic_default_sched_name[TQUIC_SCHED_NAME_MAX] = "adaptive";
+
+/* =========================================================================
+ * Per-Netns Default Scheduler (for container-friendly configuration)
+ * ========================================================================= */
+
+/*
+ * Get per-netns default scheduler (RCU protected)
+ */
+static inline struct tquic_scheduler_ops *
+tquic_get_default_sched_netns(struct net *net)
+{
+	return rcu_dereference(net->tquic.default_scheduler);
+}
+
+/*
+ * Set default scheduler for a network namespace
+ *
+ * This allows containers to have different default schedulers.
+ * The scheduler is validated before being set.
+ */
+int tquic_sched_set_default(struct net *net, const char *name)
+{
+	struct tquic_scheduler_ops *sched, *old;
+
+	if (!net || !name || !name[0])
+		return -EINVAL;
+
+	rcu_read_lock();
+	sched = tquic_sched_find(name);
+	if (!sched) {
+		rcu_read_unlock();
+		return -ENOENT;
+	}
+
+	if (!try_module_get(sched->owner)) {
+		rcu_read_unlock();
+		return -EBUSY;
+	}
+	rcu_read_unlock();
+
+	spin_lock(&tquic_sched_list_lock);
+	old = rcu_dereference_protected(net->tquic.default_scheduler,
+					lockdep_is_held(&tquic_sched_list_lock));
+	rcu_assign_pointer(net->tquic.default_scheduler, sched);
+	strscpy(net->tquic.sched_name, name, NETNS_TQUIC_SCHED_NAME_MAX);
+	spin_unlock(&tquic_sched_list_lock);
+
+	if (old)
+		module_put(old->owner);
+
+	synchronize_rcu();
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_sched_set_default);
+
+/*
+ * Get default scheduler name for a network namespace
+ */
+const char *tquic_sched_get_default(struct net *net)
+{
+	struct tquic_scheduler_ops *sched;
+	const char *name;
+
+	if (!net)
+		return "aggregate";
+
+	rcu_read_lock();
+	sched = tquic_get_default_sched_netns(net);
+	if (sched)
+		name = sched->name;
+	else
+		name = "aggregate";
+	rcu_read_unlock();
+
+	return name;
+}
+EXPORT_SYMBOL_GPL(tquic_sched_get_default);
+
+/* =========================================================================
+ * Per-Connection Scheduler Initialization (New API from tquic_sched.h)
+ * ========================================================================= */
+
+/*
+ * Initialize scheduler for a connection
+ *
+ * Per CONTEXT.md: "Scheduler locked at connection establishment,
+ * cannot change mid-connection"
+ *
+ * If name is NULL or empty, uses per-netns default.
+ */
+int tquic_sched_init_conn(struct tquic_connection *conn, const char *name)
+{
+	struct tquic_scheduler_ops *sched;
+	struct net *net;
+
+	if (!conn || !conn->sk)
+		return -EINVAL;
+
+	/* Scheduler can only be set before connection established */
+	if (conn->state != TQUIC_CONN_IDLE)
+		return -EISCONN;
+
+	net = sock_net(conn->sk);
+
+	if (name && name[0]) {
+		/* Explicit scheduler name specified */
+		rcu_read_lock();
+		sched = tquic_sched_find(name);
+		rcu_read_unlock();
+	} else {
+		/* Use per-netns default */
+		rcu_read_lock();
+		sched = tquic_get_default_sched_netns(net);
+		if (!sched) {
+			/* Fall back to global default */
+			sched = tquic_default_scheduler;
+		}
+		rcu_read_unlock();
+	}
+
+	if (!sched)
+		return -ENOENT;
+
+	if (!try_module_get(sched->owner))
+		return -EBUSY;
+
+	spin_lock(&conn->lock);
+
+	/* Release any existing scheduler */
+	if (conn->sched) {
+		struct tquic_scheduler_ops *old = conn->sched;
+		if (old->release)
+			old->release(conn);
+		module_put(old->owner);
+	}
+
+	conn->sched = sched;
+	conn->sched_priv = NULL;
+
+	/* Initialize scheduler state for this connection */
+	if (sched->init) {
+		int ret = sched->init(conn);
+		if (ret) {
+			conn->sched = NULL;
+			spin_unlock(&conn->lock);
+			module_put(sched->owner);
+			return ret;
+		}
+	}
+
+	spin_unlock(&conn->lock);
+
+	pr_debug("Connection %llx: scheduler initialized to %s\n",
+		 conn->conn_id, sched->name);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_sched_init_conn);
+
+/*
+ * Release scheduler resources for a connection
+ */
+void tquic_sched_release_conn(struct tquic_connection *conn)
+{
+	struct tquic_scheduler_ops *sched;
+
+	if (!conn)
+		return;
+
+	spin_lock(&conn->lock);
+	sched = conn->sched;
+	if (sched) {
+		if (sched->release)
+			sched->release(conn);
+		conn->sched = NULL;
+		conn->sched_priv = NULL;
+	}
+	spin_unlock(&conn->lock);
+
+	if (sched)
+		module_put(sched->owner);
+}
+EXPORT_SYMBOL_GPL(tquic_sched_release_conn);
+
+/*
+ * Get path selection for next packet (new API with path_result struct)
+ */
+int tquic_sched_get_path(struct tquic_connection *conn,
+			 struct tquic_sched_path_result *result,
+			 u32 flags)
+{
+	struct tquic_scheduler_ops *sched;
+	int ret;
+
+	if (!conn || !result)
+		return -EINVAL;
+
+	memset(result, 0, sizeof(*result));
+
+	rcu_read_lock();
+	sched = conn->sched;
+	if (!sched || !sched->select_path) {
+		rcu_read_unlock();
+		return -ENOENT;
+	}
+
+	/*
+	 * The existing select_path uses tquic_path_selection struct.
+	 * We adapt it to the new tquic_sched_path_result struct.
+	 * The internal select_path fills sel->paths[] and sel->num_paths.
+	 */
+	{
+		struct tquic_path_selection sel = {0};
+		sel.duplicate = false;
+
+		ret = sched->select_path(conn, &sel);
+		if (ret == 0 && sel.num_paths > 0) {
+			result->primary = sel.paths[0];
+			if (sel.num_paths > 1)
+				result->backup = sel.paths[1];
+			if (sel.duplicate)
+				result->flags |= TQUIC_SCHED_REDUNDANT;
+		}
+	}
+
+	rcu_read_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(tquic_sched_get_path);
+
+/* =========================================================================
+ * Global Default Scheduler Configuration (Legacy API)
+ * ========================================================================= */
 
 /*
  * Set default scheduler by name
