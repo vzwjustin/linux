@@ -519,5 +519,36 @@ void tquic_path_validate(struct tquic_connection *conn, struct tquic_path *path)
 }
 EXPORT_SYMBOL_GPL(tquic_path_validate);
 
+/*
+ * Lookup connection by netlink token
+ *
+ * Stub for now - full implementation in connection management phase.
+ */
+struct tquic_connection *tquic_conn_lookup_by_token(struct net *net, u32 token)
+{
+	/* TODO: Implement connection hash table lookup by token */
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_conn_lookup_by_token);
+
+/*
+ * Flush all paths from connection
+ */
+void tquic_conn_flush_paths(struct tquic_connection *conn)
+{
+	struct tquic_path *path, *tmp;
+
+	list_for_each_entry_safe(path, tmp, &conn->paths, list) {
+		/* Don't remove active path */
+		if (path == conn->active_path)
+			continue;
+
+		list_del(&path->list);
+		kfree(path);
+		conn->num_paths--;
+	}
+}
+EXPORT_SYMBOL_GPL(tquic_conn_flush_paths);
+
 MODULE_DESCRIPTION("TQUIC Path Manager for WAN Bonding");
 MODULE_LICENSE("GPL");
