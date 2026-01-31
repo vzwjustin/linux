@@ -208,10 +208,19 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 	path->local_cid.len = TQUIC_DEFAULT_CID_LEN;
 	path->local_cid.seq_num = conn->num_paths;
 
-	/* Setup validation timer */
-	timer_setup(&path->validation_timer, NULL, 0);
+	/* Setup validation timer (use new validation.timer) */
+	timer_setup(&path->validation.timer, tquic_path_validation_timeout, 0);
+	timer_setup(&path->validation_timer, NULL, 0); /* Keep legacy for compatibility */
 
-	/* Generate challenge data for path validation */
+	/* Initialize validation state */
+	path->validation.challenge_pending = false;
+	path->validation.retries = 0;
+
+	/* Initialize response queue */
+	skb_queue_head_init(&path->response.queue);
+	atomic_set(&path->response.count, 0);
+
+	/* Legacy challenge data - still used by some code */
 	get_random_bytes(path->challenge_data, sizeof(path->challenge_data));
 
 	spin_lock(&conn->lock);
@@ -224,6 +233,11 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 	spin_unlock(&conn->lock);
 
 	pr_debug("tquic: added path %u to connection\n", path->path_id);
+
+	/* Start validation immediately for non-backup paths */
+	if (tquic_path_start_validation(conn, path) < 0)
+		pr_warn("tquic: failed to start validation for path %u\n",
+			path->path_id);
 
 	return path->path_id;
 }
@@ -261,7 +275,14 @@ int tquic_conn_remove_path(struct tquic_connection *conn, u32 path_id)
 	if (!found)
 		return -ENOENT;
 
+	/* Stop validation timer */
+	del_timer_sync(&path->validation.timer);
 	del_timer_sync(&path->validation_timer);
+
+	/* Flush response queue */
+	skb_queue_purge(&path->response.queue);
+	atomic_set(&path->response.count, 0);
+
 	kmem_cache_free(tquic_path_cache, path);
 
 	pr_debug("tquic: removed path %u from connection\n", path_id);

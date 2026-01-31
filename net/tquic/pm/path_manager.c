@@ -365,7 +365,10 @@ struct tquic_path *tquic_pm_select_path(struct tquic_connection *conn)
 	list_for_each_entry_rcu(path, &conn->paths, list) {
 		u64 score;
 
-		if (path->state != TQUIC_PATH_ACTIVE)
+		/* Only select validated or active paths (RFC 9000 Section 9)
+		 * TQUIC_PATH_VALIDATED and TQUIC_PATH_ACTIVE are both acceptable */
+		if (path->state != TQUIC_PATH_ACTIVE &&
+		    path->state != TQUIC_PATH_VALIDATED)
 			continue;
 
 		/* Score based on RTT and bandwidth */
