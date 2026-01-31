@@ -72,6 +72,7 @@ static int tquic_sendmsg_socket(struct socket *sock, struct msghdr *msg,
 				size_t len);
 static int tquic_recvmsg_socket(struct socket *sock, struct msghdr *msg,
 				size_t len, int flags);
+static int tquic_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
 
 /* Protocol operations */
 static int tquic_init_sock(struct sock *sk);
@@ -91,7 +92,7 @@ static const struct proto_ops tquic_proto_ops = {
 	.accept		= tquic_accept_socket,
 	.getname	= tquic_getname,
 	.poll		= tquic_poll_socket,
-	.ioctl		= inet_ioctl,
+	.ioctl		= tquic_ioctl,
 	.listen		= tquic_listen,
 	.shutdown	= tquic_shutdown,
 	.setsockopt	= tquic_setsockopt,
@@ -576,6 +577,79 @@ int tquic_close(struct sock *sk, long timeout)
 EXPORT_SYMBOL_GPL(tquic_close);
 
 /*
+ * ioctl handler for connection socket
+ *
+ * Handles TQUIC-specific ioctls, primarily TQUIC_NEW_STREAM which creates
+ * new stream file descriptors. Falls back to inet_ioctl for standard ioctls.
+ */
+static int tquic_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
+{
+	struct sock *sk = sock->sk;
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_connection *conn = tsk->conn;
+	void __user *uarg = (void __user *)arg;
+
+	switch (cmd) {
+	case TQUIC_NEW_STREAM: {
+		struct tquic_stream_args args;
+		u64 stream_id;
+		bool is_bidi;
+		bool nonblock;
+		int ret;
+
+		/* Must be connected */
+		if (!conn || conn->state != TQUIC_CONN_CONNECTED)
+			return -ENOTCONN;
+
+		/* Copy args from userspace */
+		if (copy_from_user(&args, uarg, sizeof(args)))
+			return -EFAULT;
+
+		/* Validate flags */
+		if (args.flags > TQUIC_STREAM_UNIDI || args.reserved != 0)
+			return -EINVAL;
+
+		is_bidi = !(args.flags & TQUIC_STREAM_UNIDI);
+		nonblock = !!(sock->file->f_flags & O_NONBLOCK);
+
+		/*
+		 * Block until stream credit available (per CONTEXT.md).
+		 * ioctl blocks when at stream limit until peer sends MAX_STREAMS.
+		 */
+		ret = tquic_wait_for_stream_credit(conn, is_bidi, nonblock);
+		if (ret < 0)
+			return ret;
+
+		/* Create stream socket */
+		ret = tquic_stream_socket_create(conn, sk, args.flags, &stream_id);
+		if (ret < 0)
+			return ret;
+
+		/* Copy stream ID back to userspace */
+		args.stream_id = stream_id;
+		if (copy_to_user(uarg, &args, sizeof(args))) {
+			/*
+			 * We created the fd but can't return the stream_id.
+			 * The fd is still valid; user can query stream_id via sockopt.
+			 * Return success since the stream was created.
+			 */
+			pr_warn("tquic: failed to copy stream_id to user\n");
+		}
+
+		pr_debug("tquic: ioctl NEW_STREAM returned fd=%d stream_id=%llu\n",
+			 ret, stream_id);
+
+		/* Return the file descriptor */
+		return ret;
+	}
+
+	default:
+		/* Fall back to inet_ioctl for standard socket ioctls */
+		return inet_ioctl(sock, cmd, arg);
+	}
+}
+
+/*
  * Set socket options
  */
 static int tquic_setsockopt(struct socket *sock, int level, int optname,
@@ -616,6 +690,33 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 
 	case TQUIC_MULTIPATH:
 		/* Enable/disable multipath */
+		break;
+
+	case TQUIC_MIGRATE: {
+		struct tquic_migrate_args args;
+
+		if (optlen < sizeof(args))
+			return -EINVAL;
+
+		if (copy_from_sockptr(&args, optval, sizeof(args)))
+			return -EFAULT;
+
+		if (args.reserved != 0)
+			return -EINVAL;
+
+		if (tsk->conn)
+			return tquic_migrate_explicit(tsk->conn,
+						      &args.local_addr,
+						      args.flags);
+
+		return -ENOTCONN;
+	}
+
+	case TQUIC_MIGRATION_ENABLED:
+		if (val)
+			tsk->flags |= TQUIC_F_MIGRATION_ENABLED;
+		else
+			tsk->flags &= ~TQUIC_F_MIGRATION_ENABLED;
 		break;
 
 	default:
@@ -681,6 +782,28 @@ static int tquic_getsockopt(struct socket *sock, int level, int optname,
 		} else {
 			val = 0;
 		}
+		break;
+
+	case TQUIC_MIGRATE_STATUS: {
+		struct tquic_migrate_info info;
+
+		if (len < sizeof(info))
+			return -EINVAL;
+
+		if (tsk->conn)
+			tquic_migration_get_status(tsk->conn, &info);
+		else
+			memset(&info, 0, sizeof(info));
+
+		if (copy_to_user(optval, &info, sizeof(info)))
+			return -EFAULT;
+		if (put_user(sizeof(info), optlen))
+			return -EFAULT;
+		return 0;
+	}
+
+	case TQUIC_MIGRATION_ENABLED:
+		val = (tsk->flags & TQUIC_F_MIGRATION_ENABLED) ? 1 : 0;
 		break;
 
 	default:
