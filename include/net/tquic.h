@@ -346,7 +346,8 @@ struct tquic_handshake_state;
  * @conn: Associated TQUIC connection
  * @bind_addr: Bound local address
  * @connect_addr: Connected remote address
- * @accept_queue: Queue of incoming connections
+ * @accept_queue: Queue of incoming connections (listener)
+ * @accept_list: Linkage for being queued on listener (child socket)
  * @accept_queue_len: Length of accept queue
  * @max_accept_queue: Maximum accept queue length
  * @default_stream: Default stream for simple operations
@@ -361,7 +362,9 @@ struct tquic_sock {
 	struct sockaddr_storage bind_addr;
 	struct sockaddr_storage connect_addr;
 
-	struct list_head accept_queue;
+	struct list_head accept_queue;	/* Listener: queue of pending children */
+	struct list_head accept_list;	/* Child: linkage in listener's queue */
+	struct hlist_node listener_node; /* Listener hash table linkage */
 	u32 accept_queue_len;
 	u32 max_accept_queue;
 
@@ -443,7 +446,7 @@ struct tquic_cong_ops {
 
 /* Core API functions */
 int tquic_connect(struct sock *sk, struct sockaddr *addr, int addr_len);
-int tquic_accept(struct sock *sk, struct sock *newsk, int flags, bool kern);
+int tquic_accept(struct sock *sk, struct sock **newsk, int flags, bool kern);
 int tquic_sendmsg(struct sock *sk, struct msghdr *msg, size_t len);
 int tquic_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags);
 int tquic_close(struct sock *sk, long timeout);

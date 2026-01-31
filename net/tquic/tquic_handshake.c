@@ -339,3 +339,294 @@ bool tquic_handshake_in_progress(struct sock *sk)
 	       !(tsk->flags & TQUIC_F_HANDSHAKE_DONE);
 }
 EXPORT_SYMBOL_GPL(tquic_handshake_in_progress);
+
+/*
+ * =============================================================================
+ * Server-side Handshake
+ * =============================================================================
+ *
+ * These functions implement server-side TLS handshake for accepting
+ * incoming QUIC connections. When an Initial packet is received on a
+ * listening socket, tquic_server_handshake() is called to create a
+ * child socket, perform the server handshake, and queue the connection
+ * on the listener's accept queue upon success.
+ */
+
+/* Forward declaration for server handshake callback */
+static void tquic_server_handshake_done(void *data, int status,
+					key_serial_t peerid);
+
+/**
+ * tquic_install_crypto_state - Install crypto keys after handshake
+ * @sk: Socket with completed handshake
+ *
+ * Called from handshake completion callback to install negotiated keys.
+ * The actual key material is managed by the net/handshake infrastructure
+ * and the tlshd daemon.
+ */
+void tquic_install_crypto_state(struct sock *sk)
+{
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_connection *conn = tsk->conn;
+
+	if (!conn)
+		return;
+
+	/* Mark crypto as ready - keys extracted by net/handshake infrastructure */
+	conn->crypto_state = (void *)1;  /* Non-NULL indicates ready */
+	tsk->flags |= TQUIC_F_HANDSHAKE_DONE;
+
+	pr_debug("tquic: crypto state installed\n");
+}
+EXPORT_SYMBOL_GPL(tquic_install_crypto_state);
+
+/**
+ * tquic_conn_server_accept_init - Initialize connection for server accept
+ * @conn: New connection for accepted client
+ * @initial_pkt: The incoming Initial packet
+ *
+ * Extracts connection IDs from Initial packet and initializes server-side
+ * state. This is a helper for tquic_server_handshake.
+ *
+ * Returns: 0 on success, negative errno on failure.
+ */
+static int tquic_conn_server_accept_init(struct tquic_connection *conn,
+					 struct sk_buff *initial_pkt)
+{
+	/*
+	 * TODO: Parse Initial packet header to extract:
+	 * - Destination CID (becomes our SCID)
+	 * - Source CID (becomes peer's CID / our DCID)
+	 * - Version
+	 * - Token (if present)
+	 */
+
+	if (!initial_pkt || initial_pkt->len < 20)
+		return -EINVAL;
+
+	/* For now, generate server-side CIDs */
+	conn->scid.len = TQUIC_DEFAULT_CID_LEN;
+	get_random_bytes(conn->scid.id, conn->scid.len);
+
+	/* Placeholder: Extract DCID from packet */
+	conn->dcid.len = TQUIC_DEFAULT_CID_LEN;
+
+	/* Mark as server-side connection */
+	conn->state = TQUIC_CONN_CONNECTING;
+
+	return 0;
+}
+
+/**
+ * tquic_start_server_handshake - Start server TLS handshake
+ * @sk: Child socket for the new connection
+ * @hs: Handshake state structure
+ *
+ * Initiates the server-side TLS handshake via tls_server_hello_x509.
+ * Returns: 0 on success, negative errno on failure.
+ */
+static int tquic_start_server_handshake(struct sock *sk,
+					struct tquic_handshake_state *hs)
+{
+	struct socket *sock = sk->sk_socket;
+	struct tls_handshake_args args;
+
+	if (!sock)
+		return -ENOTCONN;
+
+	memset(&args, 0, sizeof(args));
+	args.ta_sock = sock;
+	args.ta_done = tquic_server_handshake_done;
+	args.ta_data = sk;
+	args.ta_timeout_ms = hs->timeout_ms;
+	args.ta_keyring = TLS_NO_KEYRING;
+
+	return tls_server_hello_x509(&args, GFP_ATOMIC);
+}
+
+/**
+ * tquic_server_handshake_done - Server handshake completion callback
+ * @data: Child socket pointer
+ * @status: 0 on success, negative errno on failure
+ * @peerid: Peer certificate key serial
+ *
+ * Called by net/handshake when server-side TLS handshake completes.
+ * On success, the child socket is added to the listener's accept queue.
+ * On failure, the child socket is cleaned up.
+ */
+static void tquic_server_handshake_done(void *data, int status,
+					key_serial_t peerid)
+{
+	struct sock *child_sk = data;
+	struct tquic_sock *child_tsk = tquic_sk(child_sk);
+	struct tquic_connection *conn = child_tsk->conn;
+	struct tquic_handshake_state *hs;
+	struct sock *listener_sk;
+	struct tquic_sock *listen_tsk;
+
+	if (!conn) {
+		pr_debug("tquic: server handshake callback with NULL conn\n");
+		return;
+	}
+
+	hs = child_tsk->handshake_state;
+
+	if (status == 0) {
+		/* Handshake successful */
+		tquic_install_crypto_state(child_sk);
+		child_tsk->flags |= TQUIC_F_HANDSHAKE_DONE;
+		inet_sk_set_state(child_sk, TCP_ESTABLISHED);
+		conn->state = TQUIC_CONN_CONNECTED;
+
+		/* Find listener and add to accept queue */
+		listener_sk = conn->sk;  /* Listener stored during creation */
+		if (listener_sk && listener_sk != child_sk &&
+		    listener_sk->sk_state == TCP_LISTEN) {
+			listen_tsk = tquic_sk(listener_sk);
+
+			spin_lock_bh(&listener_sk->sk_lock.slock);
+			list_add_tail(&child_tsk->accept_list,
+				      &listen_tsk->accept_queue);
+			listen_tsk->accept_queue_len++;
+			spin_unlock_bh(&listener_sk->sk_lock.slock);
+
+			/* Wake up accept() waiters */
+			listener_sk->sk_data_ready(listener_sk);
+
+			pr_debug("tquic: server handshake complete, child queued\n");
+		} else {
+			pr_warn("tquic: server handshake done but no valid listener\n");
+		}
+	} else {
+		/* Handshake failed - clean up child */
+		pr_debug("tquic: server handshake failed: %d\n", status);
+		inet_sk_set_state(child_sk, TCP_CLOSE);
+		if (conn) {
+			tquic_conn_destroy(conn);
+			child_tsk->conn = NULL;
+		}
+		sock_put(child_sk);  /* Release reference */
+	}
+
+	/* Complete the handshake wait (if anyone is waiting) */
+	if (hs)
+		complete(&hs->done);
+}
+
+/**
+ * tquic_server_handshake - Initiate server-side TLS handshake
+ * @listener_sk: The listening socket
+ * @initial_pkt: The incoming Initial packet
+ * @client_addr: Client's source address
+ *
+ * Creates a new connection, performs server handshake, and
+ * queues the connection on the listener's accept queue on success.
+ *
+ * This function is called from the UDP receive path when an Initial
+ * packet arrives on a listening socket.
+ *
+ * Returns: 0 on handshake initiated, negative errno on failure
+ */
+int tquic_server_handshake(struct sock *listener_sk,
+			   struct sk_buff *initial_pkt,
+			   struct sockaddr_storage *client_addr)
+{
+	struct tquic_sock *listen_tsk = tquic_sk(listener_sk);
+	struct sock *child_sk;
+	struct tquic_sock *child_tsk;
+	struct tquic_connection *conn;
+	struct tquic_handshake_state *hs;
+	int ret;
+
+	/* Check accept queue space */
+	if (listen_tsk->accept_queue_len >= listen_tsk->max_accept_queue) {
+		pr_debug("tquic: accept queue full, refusing connection\n");
+		return -ECONNREFUSED;
+	}
+
+	/* Create child socket for this connection */
+	child_sk = sk_alloc(sock_net(listener_sk), listener_sk->sk_family,
+			    GFP_ATOMIC, listener_sk->sk_prot, true);
+	if (!child_sk) {
+		pr_debug("tquic: failed to allocate child socket\n");
+		return -ENOMEM;
+	}
+
+	sock_init_data(NULL, child_sk);
+	child_tsk = tquic_sk(child_sk);
+
+	/* Initialize accept list node */
+	INIT_LIST_HEAD(&child_tsk->accept_list);
+	INIT_LIST_HEAD(&child_tsk->accept_queue);
+	child_tsk->accept_queue_len = 0;
+	child_tsk->max_accept_queue = 0;
+
+	/* Create connection for child */
+	conn = tquic_conn_create(child_sk, GFP_ATOMIC);
+	if (!conn) {
+		pr_debug("tquic: failed to create connection for child\n");
+		sk_free(child_sk);
+		return -ENOMEM;
+	}
+	child_tsk->conn = conn;
+
+	/* Store parent socket reference for accept queue callback */
+	/* We temporarily store listener in conn->sk, will be updated on accept */
+	conn->sk = listener_sk;
+
+	/* Store addresses */
+	memcpy(&child_tsk->connect_addr, client_addr,
+	       sizeof(struct sockaddr_storage));
+	memcpy(&child_tsk->bind_addr, &listen_tsk->bind_addr,
+	       sizeof(struct sockaddr_storage));
+
+	/* Process Initial packet to extract CIDs */
+	ret = tquic_conn_server_accept_init(conn, initial_pkt);
+	if (ret < 0) {
+		pr_debug("tquic: failed to process Initial packet: %d\n", ret);
+		tquic_conn_destroy(conn);
+		child_tsk->conn = NULL;
+		sk_free(child_sk);
+		return ret;
+	}
+
+	/* Allocate handshake state */
+	hs = kzalloc(sizeof(*hs), GFP_ATOMIC);
+	if (!hs) {
+		tquic_conn_destroy(conn);
+		child_tsk->conn = NULL;
+		sk_free(child_sk);
+		return -ENOMEM;
+	}
+
+	hs->sk = child_sk;
+	hs->timeout_ms = TQUIC_HANDSHAKE_TIMEOUT_MS;
+	hs->start_time = jiffies;
+	init_completion(&hs->done);
+	child_tsk->handshake_state = hs;
+
+	/* Set child socket state */
+	inet_sk_set_state(child_sk, TCP_SYN_RECV);
+	child_tsk->flags |= TQUIC_F_SERVER_MODE;
+
+	/* Take reference for handshake callback */
+	sock_hold(child_sk);
+
+	/* Initiate server TLS handshake */
+	ret = tquic_start_server_handshake(child_sk, hs);
+	if (ret < 0) {
+		pr_debug("tquic: failed to start server handshake: %d\n", ret);
+		sock_put(child_sk);
+		child_tsk->handshake_state = NULL;
+		kfree(hs);
+		tquic_conn_destroy(conn);
+		child_tsk->conn = NULL;
+		sk_free(child_sk);
+		return ret;
+	}
+
+	/* Handshake proceeds async; child added to accept queue on completion */
+	pr_debug("tquic: server handshake initiated for incoming connection\n");
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_server_handshake);
