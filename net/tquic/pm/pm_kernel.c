@@ -131,25 +131,33 @@ static void tquic_pm_kernel_mark_unavailable(struct tquic_connection *conn,
 {
 	struct tquic_path *path;
 
-	spin_lock_bh(&conn->lock);
-	list_for_each_entry(path, &conn->paths, list) {
-		struct sockaddr_in *sin;
-
-		if (path->local_addr.ss_family != AF_INET)
+	rcu_read_lock();
+	list_for_each_entry_rcu(path, &conn->paths, list) {
+		/* Check if path uses this interface */
+		if (path->dev != dev)
 			continue;
 
-		/* Check if this path uses the interface going down */
-		sin = (struct sockaddr_in *)&path->local_addr;
-
-		/* Mark as failed but preserve state for recovery */
 		if (path->state == TQUIC_PATH_ACTIVE ||
+		    path->state == TQUIC_PATH_VALIDATED ||
 		    path->state == TQUIC_PATH_STANDBY) {
-			path->state = TQUIC_PATH_FAILED;
-			pr_debug("TQUIC PM kernel: Path %u marked failed (dev %s down)\n",
+			/* Preserve state for recovery */
+			path->saved_state = path->state;
+			path->state = TQUIC_PATH_UNAVAILABLE;
+
+			/* Stop validation timer */
+			del_timer(&path->validation.timer);
+
+			/* Emit event */
+			tquic_nl_path_event(conn, path, TQUIC_PM_EVENT_DEGRADED);
+
+			pr_debug("tquic: path %u marked unavailable (interface %s down)\n",
 				 path->path_id, dev->name);
 		}
 	}
-	spin_unlock_bh(&conn->lock);
+	rcu_read_unlock();
+
+	/* Notify bonding layer to failover */
+	tquic_bond_interface_down(conn, dev);
 }
 
 /**

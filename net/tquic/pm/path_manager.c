@@ -602,6 +602,34 @@ static struct tquic_path *tquic_path_alloc(struct tquic_connection *conn,
 		       sizeof(struct sockaddr_in) :
 		       sizeof(struct sockaddr_in6));
 
+	/* Determine network device for this path (for interface tracking) */
+	if (local && local->sa_family == AF_INET && conn->sk) {
+		struct sockaddr_in *sin = (struct sockaddr_in *)local;
+		struct net *net = sock_net(conn->sk);
+		struct net_device *dev, *found_dev = NULL;
+
+		rcu_read_lock();
+		for_each_netdev_rcu(net, dev) {
+			struct in_device *in_dev = __in_dev_get_rcu(dev);
+			const struct in_ifaddr *ifa;
+
+			if (!in_dev)
+				continue;
+
+			in_dev_for_each_ifa_rcu(ifa, in_dev) {
+				if (ifa->ifa_local == sin->sin_addr.s_addr) {
+					found_dev = dev;
+					break;
+				}
+			}
+			if (found_dev)
+				break;
+		}
+		if (found_dev)
+			path->dev = dev_hold(found_dev);
+		rcu_read_unlock();
+	}
+
 	/* Initialize validation timer */
 	timer_setup(&path->validation.timer, tquic_path_validation_timeout, 0);
 
@@ -719,6 +747,10 @@ int tquic_conn_remove_path_safe(struct tquic_connection *conn,
 
 	/* Purge response queue */
 	skb_queue_purge(&path->response.queue);
+
+	/* Release device reference */
+	if (path->dev)
+		dev_put(path->dev);
 
 	/* Remove from list with RCU grace period */
 	spin_lock_bh(&conn->paths_lock);
