@@ -21,6 +21,37 @@
 
 #include "protocol.h"
 
+/*
+ * Lockdep class keys for TQUIC sockets
+ * Indexed: [0] = IPv4, [1] = IPv6
+ */
+struct lock_class_key tquic_slock_keys[2];
+struct lock_class_key tquic_lock_keys[2];
+
+/*
+ * Lock class keys for connection, path, and stream locks
+ */
+struct lock_class_key tquic_conn_lock_key;
+struct lock_class_key tquic_path_lock_key;
+struct lock_class_key tquic_stream_lock_key;
+
+/*
+ * tquic_set_lockdep_class - Initialize lockdep class for socket
+ * @sk: socket to initialize lockdep for
+ * @is_ipv6: true if socket is IPv6, false for IPv4
+ *
+ * This allows lockdep to distinguish between IPv4 and IPv6 sockets
+ * and properly validate lock ordering.
+ */
+static void tquic_set_lockdep_class(struct sock *sk, bool is_ipv6)
+{
+	sock_lock_init_class_and_name(sk,
+		is_ipv6 ? "slock-AF_INET6-TQUIC" : "slock-AF_INET-TQUIC",
+		&tquic_slock_keys[is_ipv6],
+		is_ipv6 ? "sk_lock-AF_INET6-TQUIC" : "sk_lock-AF_INET-TQUIC",
+		&tquic_lock_keys[is_ipv6]);
+}
+
 /* Socket operations */
 static int tquic_release(struct socket *sock);
 static int tquic_bind(struct socket *sock, struct sockaddr *addr, int addr_len);
@@ -92,6 +123,9 @@ static struct proto tquic_prot = {
 static int tquic_init_sock(struct sock *sk)
 {
 	struct tquic_sock *tsk = tquic_sk(sk);
+
+	/* Initialize lockdep class for this socket (IPv4) */
+	tquic_set_lockdep_class(sk, false);
 
 	/* Initialize connection socket */
 	inet_sk_set_state(sk, TCP_CLOSE);
