@@ -16,7 +16,8 @@ tquic-y := \
 	tquic_udp.o \
 	tquic_output.o \
 	tquic_input.o \
-	tquic_timer.o
+	tquic_timer.o \
+	tquic_cid.o
 
 # Core protocol components
 obj-$(CONFIG_TQUIC_CORE) += tquic_core.o

@@ -286,6 +286,8 @@ struct tquic_conn_stats {
  * @timer_state: Unified timer and recovery state (idle, ack, loss, PTO)
  * @crypto_state: TLS/crypto state
  * @scheduler: Packet scheduler
+ * @state_machine: Connection state machine (extended state)
+ * @cid_pool: Connection ID pool (tquic_cid.c)
  * @lock: Connection lock
  * @refcnt: Reference counter
  * @sk: Associated socket
@@ -330,6 +332,9 @@ struct tquic_connection {
 
 	/* Connection state machine (extended state) */
 	void *state_machine;
+
+	/* Connection ID pool (tquic_cid.c) */
+	void *cid_pool;
 
 	spinlock_t lock;
 	refcount_t refcnt;
