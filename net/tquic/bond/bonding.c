@@ -100,7 +100,13 @@ static void tquic_calc_path_quality(struct tquic_path *path,
 
 	quality->score = score;
 	quality->available_cwnd = stats->cwnd;
-	quality->inflight = 0;  /* TODO: track in-flight packets */
+	/*
+	 * Track in-flight packets from path statistics.
+	 * This is updated by the congestion control module.
+	 */
+	quality->inflight = stats->tx_bytes - (stats->rx_bytes + stats->lost_packets * 1200);
+	if (quality->inflight < 0)
+		quality->inflight = 0;
 	quality->est_delivery = stats->rtt_smoothed;
 	quality->can_send = (quality->available_cwnd > quality->inflight);
 }
@@ -310,10 +316,16 @@ static int tquic_send_redundant(struct tquic_bond_state *bond,
 		if (!clone)
 			continue;
 
-		/* Mark with path info for transmission */
-		/* TODO: actual transmission */
-		kfree_skb(clone);
-		sent++;
+		/* Transmit on this path */
+		if (tquic_udp_xmit_on_path(conn, path, clone) == 0) {
+			/* Update path statistics */
+			path->stats.tx_packets++;
+			path->stats.tx_bytes += clone->len;
+			path->last_activity = ktime_get();
+			sent++;
+		} else {
+			kfree_skb(clone);
+		}
 	}
 
 	kfree_skb(skb);
@@ -516,8 +528,23 @@ int tquic_bond_reorder_deliver(struct tquic_bond_state *bond)
 		__skb_unlink(skb, &bond->reorder_queue);
 		bond->reorder_next_seq++;
 
-		/* TODO: deliver to stream layer */
-		kfree_skb(skb);
+		/*
+		 * Deliver to stream layer.
+		 * Queue the packet to the default stream's receive buffer
+		 * for the application to read.
+		 */
+		if (bond->conn && bond->conn->sk) {
+			struct tquic_sock *tsk = tquic_sk(bond->conn->sk);
+
+			if (tsk->default_stream) {
+				skb_queue_tail(&tsk->default_stream->recv_buf, skb);
+				bond->conn->sk->sk_data_ready(bond->conn->sk);
+			} else {
+				kfree_skb(skb);
+			}
+		} else {
+			kfree_skb(skb);
+		}
 		delivered++;
 	}
 

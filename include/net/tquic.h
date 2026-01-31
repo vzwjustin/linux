@@ -221,6 +221,7 @@ struct tquic_path {
  * @fin_received: FIN has been received
  * @node: Connection's stream tree linkage
  * @wait: Wait queue for blocking operations
+ * @ext: Extended stream state (priority, reassembly, etc.)
  */
 struct tquic_stream {
 	u64 id;
@@ -242,6 +243,8 @@ struct tquic_stream {
 
 	struct rb_node node;
 	wait_queue_head_t wait;
+
+	void *ext;  /* Extended stream state for reassembly and priority */
 };
 
 /**
@@ -344,6 +347,7 @@ struct tquic_connection {
  * @accept_queue_len: Length of accept queue
  * @max_accept_queue: Maximum accept queue length
  * @default_stream: Default stream for simple operations
+ * @nodelay: Disable Nagle algorithm (TQUIC_NODELAY option)
  */
 struct tquic_sock {
 	struct inet_connection_sock inet;
@@ -357,6 +361,9 @@ struct tquic_sock {
 	u32 max_accept_queue;
 
 	struct tquic_stream *default_stream;
+
+	/* Socket options */
+	bool nodelay;		/* TQUIC_NODELAY: disable Nagle, send immediately */
 };
 
 static inline struct tquic_sock *tquic_sk(struct sock *sk)

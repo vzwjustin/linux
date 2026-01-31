@@ -607,9 +607,40 @@ static int tquic_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 
 	/* If this is a listening socket, find/create connection */
 	if (test_bit(TQUIC_UDSOCK_F_LISTENING, &us->flags)) {
-		/* TODO: Lookup connection by QUIC connection ID
-		 * For now, pass to default connection handler
+		/*
+		 * Lookup connection by QUIC connection ID.
+		 * Extract DCID from packet header and lookup in CID table.
 		 */
+		struct tquic_cid dcid;
+		struct tquic_connection *lookup_conn;
+
+		if (skb->len >= 1) {
+			if (skb->data[0] & 0x80) {
+				/* Long header: version(4) + dcid_len(1) + dcid */
+				if (skb->len >= 6) {
+					u8 dcid_len = skb->data[5];
+					if (dcid_len <= TQUIC_MAX_CID_LEN &&
+					    skb->len >= 6 + dcid_len) {
+						dcid.len = dcid_len;
+						memcpy(dcid.id, skb->data + 6,
+						       dcid_len);
+						lookup_conn = tquic_conn_lookup_by_cid(&dcid);
+						if (lookup_conn)
+							conn = lookup_conn;
+					}
+				}
+			} else {
+				/* Short header: dcid at byte 1 */
+				if (skb->len >= 1 + TQUIC_DEFAULT_CID_LEN) {
+					dcid.len = TQUIC_DEFAULT_CID_LEN;
+					memcpy(dcid.id, skb->data + 1,
+					       TQUIC_DEFAULT_CID_LEN);
+					lookup_conn = tquic_conn_lookup_by_cid(&dcid);
+					if (lookup_conn)
+						conn = lookup_conn;
+				}
+			}
+		}
 	}
 
 	/* Deliver to connection */
@@ -649,14 +680,50 @@ int tquic_udp_deliver_to_conn(struct tquic_connection *conn,
 	conn->stats.rx_packets++;
 	conn->stats.rx_bytes += skb->len;
 
-	/* TODO: Process QUIC packet
-	 * - Parse QUIC header
-	 * - Decrypt payload
-	 * - Handle frames (ACK, STREAM, PATH_CHALLENGE, etc.)
-	 * - Deliver stream data to application
+	/*
+	 * Process QUIC packet:
+	 * 1. Parse QUIC header
+	 * 2. Decrypt payload (if not Initial packet)
+	 * 3. Handle frames (ACK, STREAM, PATH_CHALLENGE, etc.)
+	 * 4. Deliver stream data to application
 	 */
+	if (skb->len >= 1) {
+		u8 *data = skb->data;
+		size_t len = skb->len;
 
-	/* For now, queue to default stream for basic functionality */
+		/* Check packet type */
+		if (data[0] & 0x80) {
+			/* Long header packet - handle during handshake */
+			if (conn->state == TQUIC_CONN_CONNECTING ||
+			    conn->state == TQUIC_CONN_IDLE) {
+				/* Process handshake packet */
+				tquic_conn_process_handshake(conn, skb);
+				return 0;
+			}
+		} else {
+			/* Short header (1-RTT) packet */
+			if (conn->state == TQUIC_CONN_CONNECTED) {
+				/*
+				 * For connected state, process via coalesced
+				 * packet handler which handles decryption
+				 * and frame processing.
+				 */
+				struct sockaddr_storage src_addr;
+				memset(&src_addr, 0, sizeof(src_addr));
+				if (path) {
+					memcpy(&src_addr, &path->remote_addr,
+					       sizeof(src_addr));
+				}
+
+				tquic_process_coalesced(conn, path, data, len,
+							&src_addr);
+				kfree_skb(skb);
+				return 0;
+			}
+		}
+	}
+
+	/* Fallback: queue to default stream for basic functionality */
 	if (tsk->default_stream) {
 		skb_queue_tail(&tsk->default_stream->recv_buf, skb);
 		conn->sk->sk_data_ready(conn->sk);

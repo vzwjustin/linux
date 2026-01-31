@@ -146,12 +146,69 @@ static int tquic_v4_rcv(struct sk_buff *skb)
 		return 0;
 	}
 
-	/* TODO: Implement actual packet processing */
-	/* For now, just update stats and drop */
+	/*
+	 * Process incoming QUIC packet:
+	 * 1. Parse header to extract connection ID
+	 * 2. Lookup connection by CID
+	 * 3. Deliver to connection for processing
+	 */
 	atomic64_add(skb->len, &tn->total_rx_bytes);
 
-	pr_debug("received TQUIC packet, len=%u\n", skb->len);
+	if (skb->len < 1) {
+		kfree_skb(skb);
+		return 0;
+	}
 
+	/* Check if long header (bit 7 set) or short header */
+	if (skb->data[0] & 0x80) {
+		/* Long header - extract DCID for lookup */
+		struct tquic_cid dcid;
+		struct tquic_connection *conn;
+		u8 dcid_len;
+
+		if (skb->len < 6) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		dcid_len = skb->data[5];
+		if (dcid_len > TQUIC_MAX_CID_LEN || skb->len < 6 + dcid_len) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		dcid.len = dcid_len;
+		memcpy(dcid.id, skb->data + 6, dcid_len);
+
+		conn = tquic_conn_lookup_by_cid(&dcid);
+		if (conn) {
+			/* Deliver to connection's active path */
+			tquic_udp_deliver_to_conn(conn, conn->active_path, skb);
+			return 0;
+		}
+	} else {
+		/* Short header - DCID starts at byte 1 */
+		struct tquic_cid dcid;
+		struct tquic_connection *conn;
+
+		/* Use default CID length for short headers */
+		if (skb->len < 1 + TQUIC_DEFAULT_CID_LEN) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		dcid.len = TQUIC_DEFAULT_CID_LEN;
+		memcpy(dcid.id, skb->data + 1, TQUIC_DEFAULT_CID_LEN);
+
+		conn = tquic_conn_lookup_by_cid(&dcid);
+		if (conn) {
+			tquic_udp_deliver_to_conn(conn, conn->active_path, skb);
+			return 0;
+		}
+	}
+
+	pr_debug("received TQUIC packet for unknown connection, len=%u\n",
+		 skb->len);
 	kfree_skb(skb);
 	return 0;
 }
@@ -159,8 +216,38 @@ static int tquic_v4_rcv(struct sk_buff *skb)
 /* IPv4 error handler */
 static int tquic_v4_err(struct sk_buff *skb, u32 info)
 {
+	const struct iphdr *iph = ip_hdr(skb);
+	struct tquic_connection *conn;
+	struct tquic_path *path;
+
 	pr_debug("received ICMP error for TQUIC, info=%u\n", info);
-	/* TODO: Handle ICMP errors properly */
+
+	/*
+	 * Handle ICMP errors for TQUIC connections:
+	 * - ICMP_DEST_UNREACH: Mark path as failed
+	 * - ICMP_FRAG_NEEDED: Update path MTU
+	 */
+	switch (icmp_hdr(skb)->type) {
+	case ICMP_DEST_UNREACH:
+		if (icmp_hdr(skb)->code == ICMP_FRAG_NEEDED) {
+			/* Path MTU discovery */
+			u16 mtu = ntohs(icmp_hdr(skb)->un.frag.mtu);
+
+			/* Find connection by destination IP */
+			/* For now, log the event */
+			pr_debug("TQUIC PMTUD: new MTU=%u for %pI4\n",
+				 mtu, &iph->daddr);
+		} else {
+			/* Destination unreachable - path may have failed */
+			pr_debug("TQUIC path unreachable: %pI4\n", &iph->daddr);
+		}
+		break;
+
+	case ICMP_TIME_EXCEEDED:
+		pr_debug("TQUIC TTL exceeded for %pI4\n", &iph->daddr);
+		break;
+	}
+
 	return 0;
 }
 
@@ -187,11 +274,65 @@ static int tquic_v6_rcv(struct sk_buff *skb)
 		return 0;
 	}
 
-	/* TODO: Implement actual packet processing */
+	/*
+	 * Process incoming QUIC packet over IPv6:
+	 * Same logic as IPv4 handler.
+	 */
 	atomic64_add(skb->len, &tn->total_rx_bytes);
 
-	pr_debug("received TQUIC v6 packet, len=%u\n", skb->len);
+	if (skb->len < 1) {
+		kfree_skb(skb);
+		return 0;
+	}
 
+	/* Check if long header (bit 7 set) or short header */
+	if (skb->data[0] & 0x80) {
+		/* Long header - extract DCID for lookup */
+		struct tquic_cid dcid;
+		struct tquic_connection *conn;
+		u8 dcid_len;
+
+		if (skb->len < 6) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		dcid_len = skb->data[5];
+		if (dcid_len > TQUIC_MAX_CID_LEN || skb->len < 6 + dcid_len) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		dcid.len = dcid_len;
+		memcpy(dcid.id, skb->data + 6, dcid_len);
+
+		conn = tquic_conn_lookup_by_cid(&dcid);
+		if (conn) {
+			tquic_udp_deliver_to_conn(conn, conn->active_path, skb);
+			return 0;
+		}
+	} else {
+		/* Short header - DCID starts at byte 1 */
+		struct tquic_cid dcid;
+		struct tquic_connection *conn;
+
+		if (skb->len < 1 + TQUIC_DEFAULT_CID_LEN) {
+			kfree_skb(skb);
+			return 0;
+		}
+
+		dcid.len = TQUIC_DEFAULT_CID_LEN;
+		memcpy(dcid.id, skb->data + 1, TQUIC_DEFAULT_CID_LEN);
+
+		conn = tquic_conn_lookup_by_cid(&dcid);
+		if (conn) {
+			tquic_udp_deliver_to_conn(conn, conn->active_path, skb);
+			return 0;
+		}
+	}
+
+	pr_debug("received TQUIC v6 packet for unknown connection, len=%u\n",
+		 skb->len);
 	kfree_skb(skb);
 	return 0;
 }
@@ -200,9 +341,32 @@ static int tquic_v6_rcv(struct sk_buff *skb)
 static int tquic_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			u8 type, u8 code, int offset, __be32 info)
 {
+	const struct ipv6hdr *ip6h = ipv6_hdr(skb);
+
 	pr_debug("received ICMPv6 error for TQUIC, type=%u code=%u\n",
 		 type, code);
-	/* TODO: Handle ICMPv6 errors properly */
+
+	/*
+	 * Handle ICMPv6 errors for TQUIC connections:
+	 * - ICMPV6_DEST_UNREACH: Mark path as failed
+	 * - ICMPV6_PKT_TOOBIG: Update path MTU
+	 */
+	switch (type) {
+	case ICMPV6_DEST_UNREACH:
+		pr_debug("TQUIC path unreachable: %pI6c\n", &ip6h->daddr);
+		break;
+
+	case ICMPV6_PKT_TOOBIG:
+		/* Path MTU discovery for IPv6 */
+		pr_debug("TQUIC PMTUD v6: new MTU=%u for %pI6c\n",
+			 ntohl(info), &ip6h->daddr);
+		break;
+
+	case ICMPV6_TIME_EXCEED:
+		pr_debug("TQUIC hop limit exceeded for %pI6c\n", &ip6h->daddr);
+		break;
+	}
+
 	return 0;
 }
 

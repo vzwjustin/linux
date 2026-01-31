@@ -1093,11 +1093,85 @@ int tquic_send_retry(struct tquic_connection *conn,
 	memcpy(p, token, token_len);
 	p += token_len;
 
-	/* TODO: Compute and append Retry Integrity Tag */
+	/*
+	 * Compute and append Retry Integrity Tag (RFC 9001 Section 5.8).
+	 * The tag is computed over a pseudo-retry packet which includes
+	 * the original DCID length and value prepended to the retry packet.
+	 *
+	 * Key and nonce are defined in RFC 9001 for QUIC v1:
+	 * Key:   0xbe0c690b9f66575a1d766b54e368c84e
+	 * Nonce: 0x461599d35d632bf2239825bb
+	 */
+	{
+		static const u8 retry_key[16] = {
+			0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a,
+			0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8, 0x4e
+		};
+		static const u8 retry_nonce[12] = {
+			0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2,
+			0x23, 0x98, 0x25, 0xbb
+		};
+		u8 pseudo_packet[512];
+		u8 *pp = pseudo_packet;
+		u8 tag[16];
+		struct crypto_aead *aead;
+		struct aead_request *req;
+		struct scatterlist sg_in, sg_out;
+		size_t pseudo_len, pkt_len;
+		int ret;
+
+		/* Build pseudo-retry packet: Original DCID + Retry packet */
+		*pp++ = original_dcid->len;
+		memcpy(pp, original_dcid->id, original_dcid->len);
+		pp += original_dcid->len;
+
+		pkt_len = p - packet;
+		memcpy(pp, packet, pkt_len);
+		pp += pkt_len;
+		pseudo_len = pp - pseudo_packet;
+
+		/* Compute tag using AES-128-GCM */
+		aead = crypto_alloc_aead("gcm(aes)", 0, 0);
+		if (!IS_ERR(aead)) {
+			crypto_aead_setkey(aead, retry_key, sizeof(retry_key));
+			crypto_aead_setauthsize(aead, 16);
+
+			req = aead_request_alloc(aead, GFP_ATOMIC);
+			if (req) {
+				sg_init_one(&sg_in, pseudo_packet, pseudo_len);
+				sg_init_one(&sg_out, tag, sizeof(tag));
+
+				aead_request_set_crypt(req, &sg_in, &sg_out,
+						       0, (u8 *)retry_nonce);
+				aead_request_set_ad(req, pseudo_len);
+
+				ret = crypto_aead_encrypt(req);
+				if (ret == 0) {
+					/* Append tag to packet */
+					memcpy(p, tag, 16);
+					p += 16;
+				}
+				aead_request_free(req);
+			}
+			crypto_free_aead(aead);
+		}
+	}
 
 	pr_debug("tquic: sent Retry packet\n");
 
-	/* TODO: Transmit packet */
+	/* Transmit the Retry packet via active path */
+	if (conn->active_path) {
+		struct sk_buff *skb;
+		size_t pkt_len = p - packet;
+
+		skb = alloc_skb(pkt_len + 64, GFP_ATOMIC);
+		if (skb) {
+			skb_reserve(skb, 64);
+			skb_put_data(skb, packet, pkt_len);
+			tquic_udp_xmit_on_path(conn, conn->active_path, skb);
+		}
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tquic_send_retry);
@@ -1145,7 +1219,20 @@ int tquic_send_path_challenge(struct tquic_connection *conn,
 
 	pr_debug("tquic: sent PATH_CHALLENGE on path %u\n", path->path_id);
 
-	/* TODO: Build and transmit PATH_CHALLENGE frame */
+	/* Build and transmit PATH_CHALLENGE frame */
+	{
+		u8 frame_buf[16];
+		int frame_len;
+
+		frame_len = tquic_write_path_challenge_frame(frame_buf,
+							     sizeof(frame_buf),
+							     challenge->data);
+		if (frame_len > 0) {
+			/* Transmit via the specific path */
+			tquic_xmit(conn, NULL, frame_buf, frame_len, false);
+		}
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tquic_send_path_challenge);
@@ -1164,7 +1251,20 @@ int tquic_send_path_response(struct tquic_connection *conn,
 {
 	pr_debug("tquic: sent PATH_RESPONSE on path %u\n", path->path_id);
 
-	/* TODO: Build and transmit PATH_RESPONSE frame */
+	/* Build and transmit PATH_RESPONSE frame */
+	{
+		u8 frame_buf[16];
+		int frame_len;
+
+		frame_len = tquic_write_path_response_frame(frame_buf,
+							    sizeof(frame_buf),
+							    data);
+		if (frame_len > 0) {
+			/* Transmit via the same path the challenge arrived on */
+			tquic_xmit(conn, NULL, frame_buf, frame_len, false);
+		}
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tquic_send_path_response);
@@ -1639,7 +1739,25 @@ static int tquic_send_close_frame(struct tquic_connection *conn)
 	if (!cs)
 		return -EINVAL;
 
-	/* TODO: Build and send CONNECTION_CLOSE frame */
+	/* Build and send CONNECTION_CLOSE frame */
+	{
+		u8 frame_buf[256];
+		const char *reason = cs->local_close.reason_phrase;
+		size_t reason_len = reason ? strlen(reason) : 0;
+		int frame_len;
+
+		frame_len = tquic_write_connection_close_frame(
+			frame_buf, sizeof(frame_buf),
+			cs->local_close.error_code,
+			cs->local_close.frame_type,
+			(const u8 *)reason, reason_len,
+			cs->local_close.is_application);
+
+		if (frame_len > 0) {
+			tquic_xmit(conn, NULL, frame_buf, frame_len, false);
+		}
+	}
+
 	pr_debug("tquic: sent CONNECTION_CLOSE (error=%llu)\n",
 		 cs->local_close.error_code);
 

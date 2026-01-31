@@ -57,11 +57,27 @@ static const struct nla_policy tquic_genl_policy[TQUIC_ATTR_MAX + 1] = {
 
 /*
  * Helper: Find connection by ID
+ *
+ * The connection ID is passed as a binary blob containing the CID.
+ * We use the CID lookup function to find the corresponding connection.
  */
 static struct tquic_connection *tquic_find_conn(struct nlattr *attr)
 {
-	/* TODO: Implement connection lookup by ID */
-	return NULL;
+	struct tquic_cid cid;
+	int len;
+
+	if (!attr)
+		return NULL;
+
+	len = nla_len(attr);
+	if (len <= 0 || len > TQUIC_MAX_CID_LEN)
+		return NULL;
+
+	memset(&cid, 0, sizeof(cid));
+	cid.len = len;
+	memcpy(cid.id, nla_data(attr), len);
+
+	return tquic_conn_lookup_by_cid(&cid);
 }
 
 /*
@@ -224,8 +240,12 @@ static int tquic_nl_add_path(struct sk_buff *skb, struct genl_info *info)
 			path->weight = nla_get_u8(info->attrs[TQUIC_ATTR_WEIGHT]);
 	}
 
-	/* Notify listeners */
-	/* TODO: Send multicast notification */
+	/* Notify listeners about new path */
+	{
+		struct tquic_path *path = tquic_conn_get_path(conn, ret);
+		if (path)
+			tquic_nl_path_event(conn, path, TQUIC_PATH_EVENT_ADDED);
+	}
 
 	return ret;  /* Returns path ID */
 }
