@@ -291,4 +291,45 @@ enum tquic_nl_groups {
 };
 #define TQUIC_NL_GRP_MAX (__TQUIC_NL_GRP_MAX - 1)
 
+/*
+ * QUIC-native error codes (EQUIC*)
+ *
+ * These map to RFC 9000 QUIC Transport Error Codes.
+ * They are returned via errno and provide QUIC-specific
+ * error semantics rather than TCP-like mappings.
+ *
+ * Base value starts at 500 to avoid collision with standard errno.
+ */
+#define EQUIC_BASE			500
+
+/* Transport errors (RFC 9000 Section 20.1) */
+#define EQUIC_NO_ERROR			(EQUIC_BASE + 0x00)  /* 0x00 */
+#define EQUIC_INTERNAL_ERROR		(EQUIC_BASE + 0x01)  /* 0x01 */
+#define EQUIC_CONNECTION_REFUSED	(EQUIC_BASE + 0x02)  /* 0x02 */
+#define EQUIC_FLOW_CONTROL		(EQUIC_BASE + 0x03)  /* 0x03 */
+#define EQUIC_STREAM_LIMIT		(EQUIC_BASE + 0x04)  /* 0x04 */
+#define EQUIC_STREAM_STATE		(EQUIC_BASE + 0x05)  /* 0x05 */
+#define EQUIC_FINAL_SIZE		(EQUIC_BASE + 0x06)  /* 0x06 */
+#define EQUIC_FRAME_ENCODING		(EQUIC_BASE + 0x07)  /* 0x07 */
+#define EQUIC_TRANSPORT_PARAM		(EQUIC_BASE + 0x08)  /* 0x08 */
+#define EQUIC_CONNECTION_ID_LIMIT	(EQUIC_BASE + 0x09)  /* 0x09 */
+#define EQUIC_PROTOCOL_VIOLATION	(EQUIC_BASE + 0x0a)  /* 0x0a */
+#define EQUIC_INVALID_TOKEN		(EQUIC_BASE + 0x0b)  /* 0x0b */
+#define EQUIC_APPLICATION_ERROR		(EQUIC_BASE + 0x0c)  /* 0x0c */
+#define EQUIC_CRYPTO_BUFFER		(EQUIC_BASE + 0x0d)  /* 0x0d */
+#define EQUIC_KEY_UPDATE		(EQUIC_BASE + 0x0e)  /* 0x0e */
+#define EQUIC_AEAD_LIMIT		(EQUIC_BASE + 0x0f)  /* 0x0f */
+#define EQUIC_NO_VIABLE_PATH		(EQUIC_BASE + 0x10)  /* 0x10 */
+
+/* Crypto errors (0x100 + TLS alert) */
+#define EQUIC_CRYPTO_BASE		(EQUIC_BASE + 0x100)
+#define EQUIC_HANDSHAKE_FAILED		(EQUIC_CRYPTO_BASE + 0x00)  /* Generic handshake failure */
+#define EQUIC_CERT_EXPIRED		(EQUIC_CRYPTO_BASE + 0x2d)  /* Certificate expired (alert 45) */
+#define EQUIC_CERT_REVOKED		(EQUIC_CRYPTO_BASE + 0x2c)  /* Certificate revoked (alert 44) */
+#define EQUIC_UNKNOWN_CA		(EQUIC_CRYPTO_BASE + 0x30)  /* Unknown CA (alert 48) */
+#define EQUIC_HANDSHAKE_TIMEOUT		(EQUIC_CRYPTO_BASE + 0xff)  /* Handshake timeout */
+
+/* Connection timeout (fixed per CONTEXT.md) */
+#define TQUIC_HANDSHAKE_TIMEOUT_MS	30000  /* Fixed 30 second timeout */
+
 #endif /* _UAPI_LINUX_TQUIC_H */
