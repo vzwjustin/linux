@@ -20,12 +20,16 @@
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
 #include <linux/atomic.h>
+#include <linux/rhashtable.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/tquic.h>
 #include <uapi/linux/tquic.h>
 
 #include "tquic_mib.h"
+
+/* External reference to global connection table from tquic_main.c */
+extern struct rhashtable tquic_conn_table;
 
 /*
  * =============================================================================
@@ -272,13 +276,15 @@ static const char *tquic_state_name(enum tquic_conn_state state)
 /* seq_file private data for connection iteration */
 struct tquic_conn_iter {
 	struct net *net;
+	struct rhashtable_iter hti;
 	loff_t pos;
-	/* TODO: Add connection hash iteration state */
 };
 
 static void *tquic_conn_seq_start(struct seq_file *seq, loff_t *pos)
 {
 	struct tquic_conn_iter *iter = seq->private;
+	struct tquic_connection *conn;
+	loff_t skip = *pos;
 
 	iter->pos = *pos;
 
@@ -286,22 +292,62 @@ static void *tquic_conn_seq_start(struct seq_file *seq, loff_t *pos)
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
 
-	/* TODO: Return first connection at position 1+ */
-	/* For now, no connections to iterate */
+	/* Start rhashtable walk for position 1+ */
+	rhashtable_walk_enter(&tquic_conn_table, &iter->hti);
+	rhashtable_walk_start(&iter->hti);
+
+	/* Skip to requested position, filtering by namespace */
+	while ((conn = rhashtable_walk_next(&iter->hti)) != NULL) {
+		if (IS_ERR(conn))
+			continue;
+		/* Filter by namespace */
+		if (!net_eq(sock_net(conn->sk), iter->net))
+			continue;
+		if (--skip == 0)
+			return conn;
+	}
+
+	rhashtable_walk_stop(&iter->hti);
+	rhashtable_walk_exit(&iter->hti);
 	return NULL;
 }
 
 static void *tquic_conn_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
+	struct tquic_conn_iter *iter = seq->private;
+	struct tquic_connection *conn;
+
 	(*pos)++;
 
-	/* TODO: Return next connection */
+	if (v == SEQ_START_TOKEN) {
+		/* First connection after header */
+		rhashtable_walk_enter(&tquic_conn_table, &iter->hti);
+		rhashtable_walk_start(&iter->hti);
+	}
+
+	/* Find next connection in our namespace */
+	while ((conn = rhashtable_walk_next(&iter->hti)) != NULL) {
+		if (IS_ERR(conn))
+			continue;
+		/* Filter by namespace */
+		if (!net_eq(sock_net(conn->sk), iter->net))
+			continue;
+		return conn;
+	}
+
+	rhashtable_walk_stop(&iter->hti);
+	rhashtable_walk_exit(&iter->hti);
 	return NULL;
 }
 
 static void tquic_conn_seq_stop(struct seq_file *seq, void *v)
 {
-	/* TODO: Release any locks held during iteration */
+	struct tquic_conn_iter *iter = seq->private;
+
+	if (v && v != SEQ_START_TOKEN) {
+		rhashtable_walk_stop(&iter->hti);
+		rhashtable_walk_exit(&iter->hti);
+	}
 }
 
 /**
@@ -315,6 +361,16 @@ static void tquic_conn_seq_stop(struct seq_file *seq, void *v)
  */
 static int tquic_conn_seq_show(struct seq_file *seq, void *v)
 {
+	struct tquic_connection *conn;
+	u64 tx_bytes, rx_bytes;
+	u64 streams_opened, streams_closed;
+	int num_paths, num_streams;
+	int state;
+	char scid_hex[TQUIC_MAX_CID_LEN * 2 + 1];
+	struct sockaddr_storage local_addr, remote_addr;
+	int scid_len;
+	int i;
+
 	if (v == SEQ_START_TOKEN) {
 		/* Output header row */
 		seq_puts(seq, "  sl  local_address:port       remote_address:port      "
@@ -322,32 +378,45 @@ static int tquic_conn_seq_show(struct seq_file *seq, void *v)
 		return 0;
 	}
 
-	/* TODO: Format actual connection data */
-	/* Per CONTEXT.md: Copy data under lock, format outside */
-	/*
-	 * struct tquic_connection *conn = v;
-	 * u64 tx_bytes, rx_bytes;
-	 * int num_paths, num_streams;
-	 * char scid_hex[TQUIC_MAX_CID_LEN * 2 + 1];
-	 *
-	 * spin_lock_bh(&conn->lock);
-	 * tx_bytes = conn->stats.tx_bytes;
-	 * rx_bytes = conn->stats.rx_bytes;
-	 * num_paths = conn->num_paths;
-	 * // ... copy other fields ...
-	 * spin_unlock_bh(&conn->lock);
-	 *
-	 * seq_printf(seq, "%4d: %pISpc %pISpc %-19s %5d %7d %10llu %10llu %s\n",
-	 *            slot,
-	 *            &conn->active_path->local_addr,
-	 *            &conn->active_path->remote_addr,
-	 *            tquic_state_name(conn->state),
-	 *            num_paths,
-	 *            stream_count,
-	 *            tx_bytes,
-	 *            rx_bytes,
-	 *            scid_hex);
-	 */
+	conn = v;
+
+	/* Copy data under lock */
+	spin_lock_bh(&conn->lock);
+	tx_bytes = conn->stats.tx_bytes;
+	rx_bytes = conn->stats.rx_bytes;
+	streams_opened = conn->stats.streams_opened;
+	streams_closed = conn->stats.streams_closed;
+	num_paths = conn->num_paths;
+	state = conn->state;
+	scid_len = conn->scid.len;
+	for (i = 0; i < scid_len && i < TQUIC_MAX_CID_LEN; i++)
+		sprintf(&scid_hex[i * 2], "%02x", conn->scid.id[i]);
+	scid_hex[scid_len * 2] = '\0';
+	if (conn->active_path) {
+		memcpy(&local_addr, &conn->active_path->local_addr,
+		       sizeof(local_addr));
+		memcpy(&remote_addr, &conn->active_path->remote_addr,
+		       sizeof(remote_addr));
+	} else {
+		memset(&local_addr, 0, sizeof(local_addr));
+		memset(&remote_addr, 0, sizeof(remote_addr));
+	}
+	spin_unlock_bh(&conn->lock);
+
+	num_streams = (int)(streams_opened - streams_closed);
+	if (num_streams < 0)
+		num_streams = 0;
+
+	seq_printf(seq, "%4d: %pISpc %pISpc %-19s %5d %7d %10llu %10llu %s\n",
+		   0,  /* slot */
+		   &local_addr,
+		   &remote_addr,
+		   tquic_state_name(state),
+		   num_paths,
+		   num_streams,
+		   tx_bytes,
+		   rx_bytes,
+		   scid_hex);
 
 	return 0;
 }
