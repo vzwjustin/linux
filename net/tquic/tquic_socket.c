@@ -58,7 +58,7 @@ static int tquic_bind(struct socket *sock, struct sockaddr *addr, int addr_len);
 static int tquic_connect_socket(struct socket *sock, struct sockaddr *addr,
 				int addr_len, int flags);
 static int tquic_accept_socket(struct socket *sock, struct socket *newsock,
-			       int flags, bool kern);
+			       struct proto_accept_arg *arg);
 static int tquic_getname(struct socket *sock, struct sockaddr *addr, int peer);
 static __poll_t tquic_poll_socket(struct file *file, struct socket *sock,
 				  poll_table *wait);
@@ -132,8 +132,11 @@ static int tquic_init_sock(struct sock *sk)
 
 	/* Initialize TQUIC-specific state */
 	INIT_LIST_HEAD(&tsk->accept_queue);
+	INIT_LIST_HEAD(&tsk->accept_list);
+	INIT_HLIST_NODE(&tsk->listener_node);
 	tsk->accept_queue_len = 0;
 	tsk->max_accept_queue = 128;
+	tsk->flags = 0;
 
 	/* Create connection structure */
 	tsk->conn = tquic_conn_create(sk, GFP_KERNEL);
@@ -353,110 +356,114 @@ out:
 }
 
 /*
- * Accept incoming connection
+ * Accept incoming connection (socket layer wrapper)
+ *
+ * This is called by the socket layer. It calls tquic_accept() to get
+ * the child socket from the accept queue, then grafts it onto newsock.
  */
 static int tquic_accept_socket(struct socket *sock, struct socket *newsock,
-			       int flags, bool kern)
+			       struct proto_accept_arg *arg)
 {
 	struct sock *sk = sock->sk;
 	struct sock *newsk;
-	int ret;
+	int err;
 
-	newsk = sock_alloc();
-	if (!newsk)
-		return -ENOMEM;
+	err = tquic_accept(sk, &newsk, arg->flags, arg->kern);
+	if (err < 0)
+		return err;
 
-	newsock->sk = newsk;
-
-	ret = tquic_accept(sk, newsk, flags, kern);
-	if (ret < 0) {
-		sock_release(newsock);
-		return ret;
-	}
+	/* Graft the child socket onto newsock */
+	sock_graft(newsk, newsock);
+	newsock->state = SS_CONNECTED;
 
 	return 0;
 }
 
-int tquic_accept(struct sock *sk, struct sock *newsk, int flags, bool kern)
+/**
+ * tquic_accept - Accept incoming connection from listen queue
+ * @sk: Listening socket
+ * @newsk: Output pointer for accepted socket
+ * @flags: Socket flags (O_NONBLOCK, etc.)
+ * @kern: True if kernel socket
+ *
+ * Waits for and dequeues a connection from the accept queue.
+ * The returned socket is in TCP_ESTABLISHED state with a working
+ * connection (handshake already completed by server_handshake).
+ *
+ * Returns: 0 on success with *newsk set, negative errno on failure
+ */
+int tquic_accept(struct sock *sk, struct sock **newsk, int flags, bool kern)
 {
 	struct tquic_sock *tsk = tquic_sk(sk);
-	struct tquic_sock *new_tsk;
-	struct tquic_connection *new_conn;
+	struct tquic_sock *child_tsk;
+	DEFINE_WAIT(wait);
+	int err = 0;
 
-	/* Check if we're in listen state */
-	if (sk->sk_state != TCP_LISTEN)
-		return -EINVAL;
+	lock_sock(sk);
 
-	/* Check accept queue */
-	if (list_empty(&tsk->accept_queue)) {
-		DEFINE_WAIT(wait);
-		int err = 0;
-
-		if (flags & O_NONBLOCK)
-			return -EAGAIN;
-
-		/* Wait for incoming connection */
-		for (;;) {
-			prepare_to_wait_exclusive(sk_sleep(sk), &wait,
-						  TASK_INTERRUPTIBLE);
-			if (!list_empty(&tsk->accept_queue))
-				break;
-			if (signal_pending(current)) {
-				err = -ERESTARTSYS;
-				break;
-			}
-			if (sk->sk_state != TCP_LISTEN) {
-				err = -EINVAL;
-				break;
-			}
-			release_sock(sk);
-			schedule();
-			lock_sock(sk);
-		}
-		finish_wait(sk_sleep(sk), &wait);
-		if (err)
-			return err;
+	/* Must be in listen state */
+	if (sk->sk_state != TCP_LISTEN) {
+		err = -EINVAL;
+		goto out_unlock;
 	}
 
-	/* Get connection from accept queue */
-	spin_lock_bh(&sk->sk_lock.slock);
-	if (!list_empty(&tsk->accept_queue)) {
-		struct tquic_sock *child_tsk;
+	/* Wait for incoming connection */
+	for (;;) {
+		/* Check accept queue under spinlock */
+		spin_lock_bh(&sk->sk_lock.slock);
+		if (!list_empty(&tsk->accept_queue)) {
+			child_tsk = list_first_entry(&tsk->accept_queue,
+						     struct tquic_sock,
+						     accept_list);
+			list_del_init(&child_tsk->accept_list);
+			tsk->accept_queue_len--;
+			spin_unlock_bh(&sk->sk_lock.slock);
 
-		child_tsk = list_first_entry(&tsk->accept_queue,
-					     struct tquic_sock, accept_queue);
-		list_del_init(&child_tsk->accept_queue);
-		tsk->accept_queue_len--;
+			/* Return the child socket */
+			*newsk = (struct sock *)child_tsk;
+
+			/* Update connection's socket pointer */
+			if (child_tsk->conn)
+				child_tsk->conn->sk = (struct sock *)child_tsk;
+
+			pr_debug("tquic: accept returned connection\n");
+			goto out_unlock;
+		}
 		spin_unlock_bh(&sk->sk_lock.slock);
 
-		/* Transfer the child connection to the new socket */
-		new_tsk = tquic_sk(newsk);
-		new_tsk->conn = child_tsk->conn;
-		child_tsk->conn = NULL;
-		memcpy(&new_tsk->bind_addr, &child_tsk->bind_addr,
-		       sizeof(struct sockaddr_storage));
-		memcpy(&new_tsk->connect_addr, &child_tsk->connect_addr,
-		       sizeof(struct sockaddr_storage));
-		new_tsk->default_stream = child_tsk->default_stream;
-		child_tsk->default_stream = NULL;
-		inet_sk_set_state(newsk, TCP_ESTABLISHED);
+		/* Non-blocking mode */
+		if (flags & O_NONBLOCK) {
+			err = -EAGAIN;
+			goto out_unlock;
+		}
 
-		pr_debug("tquic: accepted connection from queue\n");
-		return 0;
+		/* Wait for incoming connection */
+		prepare_to_wait_exclusive(sk_sleep(sk), &wait,
+					  TASK_INTERRUPTIBLE);
+
+		release_sock(sk);
+
+		if (signal_pending(current)) {
+			finish_wait(sk_sleep(sk), &wait);
+			lock_sock(sk);
+			err = -ERESTARTSYS;
+			goto out_unlock;
+		}
+
+		schedule();
+		lock_sock(sk);
+		finish_wait(sk_sleep(sk), &wait);
+
+		/* Check if socket is still listening */
+		if (sk->sk_state != TCP_LISTEN) {
+			err = -EINVAL;
+			goto out_unlock;
+		}
 	}
-	spin_unlock_bh(&sk->sk_lock.slock);
 
-	/* Fallback: create a new connection if queue was empty */
-	new_tsk = tquic_sk(newsk);
-	new_conn = tquic_conn_create(newsk, GFP_KERNEL);
-	if (!new_conn)
-		return -ENOMEM;
-
-	new_tsk->conn = new_conn;
-	inet_sk_set_state(newsk, TCP_ESTABLISHED);
-
-	pr_debug("tquic: accepted connection\n");
-	return 0;
+out_unlock:
+	release_sock(sk);
+	return err;
 }
 EXPORT_SYMBOL_GPL(tquic_accept);
 
