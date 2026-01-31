@@ -167,9 +167,8 @@ int tquic_path_send_challenge(struct tquic_connection *conn,
 	path->validation.challenge_sent = ktime_get();
 	path->validation.challenge_pending = true;
 
-	/* TODO: Actually build and send PATH_CHALLENGE frame
-	 * This requires frame encoding which will be done in Task 2
-	 * For now, we've set up the state correctly */
+	/* Send PATH_CHALLENGE frame via existing connection.c helper */
+	tquic_send_path_challenge(conn, path);
 
 	pr_debug("tquic_pm: sent PATH_CHALLENGE on path %u (attempt %u)\n",
 		 path->path_id, path->validation.retries + 1);

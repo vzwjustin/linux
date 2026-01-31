@@ -760,6 +760,7 @@ static int tquic_process_max_stream_data_frame(struct tquic_rx_ctx *ctx)
 static int tquic_process_path_challenge_frame(struct tquic_rx_ctx *ctx)
 {
 	u8 data[8];
+	int ret;
 
 	ctx->offset++;  /* Skip frame type */
 
@@ -769,8 +770,12 @@ static int tquic_process_path_challenge_frame(struct tquic_rx_ctx *ctx)
 	memcpy(data, ctx->data + ctx->offset, 8);
 	ctx->offset += 8;
 
-	/* Send PATH_RESPONSE with same data */
-	tquic_send_path_response(ctx->conn, ctx->path, data);
+	/* Handle challenge through path validation module */
+	ret = tquic_path_handle_challenge(ctx->conn, ctx->path, data);
+	if (ret < 0 && ret != -ENOBUFS) {
+		/* Log error but don't fail packet processing */
+		pr_debug("tquic: PATH_CHALLENGE handling failed: %d\n", ret);
+	}
 
 	ctx->ack_eliciting = true;
 
@@ -783,6 +788,7 @@ static int tquic_process_path_challenge_frame(struct tquic_rx_ctx *ctx)
 static int tquic_process_path_response_frame(struct tquic_rx_ctx *ctx)
 {
 	u8 data[8];
+	int ret;
 
 	ctx->offset++;  /* Skip frame type */
 
@@ -792,12 +798,10 @@ static int tquic_process_path_response_frame(struct tquic_rx_ctx *ctx)
 	memcpy(data, ctx->data + ctx->offset, 8);
 	ctx->offset += 8;
 
-	/* Validate path if response matches our challenge */
-	if (ctx->path &&
-	    memcmp(data, ctx->path->challenge_data, 8) == 0) {
-		tquic_path_validate(ctx->conn, ctx->path);
-
-		/* Update MIB counter for path validation */
+	/* Handle response through path validation module */
+	ret = tquic_path_handle_response(ctx->conn, ctx->path, data);
+	if (ret == 0) {
+		/* Update MIB counter for successful path validation */
 		if (ctx->conn && ctx->conn->sk)
 			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_PATHVALIDATED);
 	}
