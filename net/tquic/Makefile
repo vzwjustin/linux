@@ -10,6 +10,7 @@ tquic-y := \
 	tquic_main.o \
 	tquic_proto.o \
 	tquic_socket.o \
+	tquic_stream.o \
 	tquic_handshake.o \
 	tquic_netlink.o \
 	tquic_sysctl.o \
