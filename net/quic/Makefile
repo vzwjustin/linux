@@ -19,4 +19,5 @@ quic-y := \
 	ack.o \
 	offload.o \
 	output.o \
-	tquic_bonding.o
+	tquic_bonding.o \
+	tquic_reorder.o
