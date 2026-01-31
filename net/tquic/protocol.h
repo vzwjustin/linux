@@ -147,6 +147,119 @@ static inline struct ipv6_pinfo *tquic_inet6_sk(const struct sock *sk)
 #define TQUIC_F_CLOSING			BIT(4)
 
 /*
+ * =============================================================================
+ * INLINE LOCK DOCUMENTATION
+ * =============================================================================
+ *
+ * This section provides detailed inline documentation for each lock field
+ * in the TQUIC data structures. These comments should be treated as the
+ * authoritative reference for lock semantics and ordering.
+ *
+ * The structures are defined in include/net/tquic.h but their locking
+ * semantics are documented here for maintainability.
+ */
+
+/*
+ * struct tquic_connection lock fields:
+ * ------------------------------------
+ *
+ * conn->lock (spinlock_t):
+ *
+ *   Main connection state lock. This is a spinlock using BH variants
+ *   for softirq safety.
+ *
+ *   Protects:
+ *     - state transitions (conn->state)
+ *     - Path list modifications (conn->paths, conn->active_path)
+ *     - Connection ID changes (conn->scid, conn->dcid)
+ *     - Global sequence numbers
+ *     - Stream tree modifications (conn->streams)
+ *     - Flow control state (conn->max_data_*, conn->data_*)
+ *
+ *   Lock ordering: sk->sk_lock > conn->lock
+ *   Context: softirq-safe, use spin_lock_bh()/spin_unlock_bh()
+ *   Nesting: conn->lock > path->state_lock > stream->lock
+ *
+ *   Never hold while sleeping. Never hold multiple conn->locks.
+ *   Use tquic_conn_lock()/tquic_conn_unlock() helpers.
+ *
+ * conn->refcnt (refcount_t):
+ *
+ *   Reference counter for connection lifecycle.
+ *   Use tquic_conn_get()/tquic_conn_put() helpers.
+ *   Connection is freed when refcount drops to zero.
+ */
+
+/*
+ * struct tquic_path lock fields (per path->state_lock):
+ * -----------------------------------------------------
+ *
+ * path->state_lock (spinlock_t):
+ *
+ *   Per-path spinlock for path-specific state protection.
+ *
+ *   Protects:
+ *     - Path state transitions (path->state)
+ *     - RTT samples and statistics (path->stats.rtt_*)
+ *     - Path MTU (path->mtu)
+ *     - Priority and weight (path->priority, path->weight)
+ *     - Probe state (path->probe_count, path->challenge_data)
+ *
+ *   Lock ordering: conn->lock > path->state_lock
+ *   Context: softirq-safe (may be called from timer/softirq)
+ *
+ *   Never hold multiple path locks simultaneously.
+ *   When updating multiple paths, acquire conn->lock instead.
+ */
+
+/*
+ * struct tquic_stream lock fields:
+ * --------------------------------
+ *
+ * stream->lock (spinlock_t - if present):
+ *
+ *   Per-stream spinlock for stream-specific state.
+ *   Note: Stream locking strategy may use conn->lock instead
+ *   for simplicity in initial implementation.
+ *
+ *   Protects:
+ *     - Stream state transitions (stream->state)
+ *     - Send/receive offsets (stream->send_offset, stream->recv_offset)
+ *     - Flow control limits (stream->max_send_data, stream->max_recv_data)
+ *     - Buffer access (stream->send_buf, stream->recv_buf) - with care
+ *     - FIN state (stream->fin_sent, stream->fin_received)
+ *
+ *   Lock ordering: conn->lock > path->state_lock > stream->lock
+ *
+ *   Buffer queues (sk_buff_head) have their own internal locks for
+ *   queue operations. Stream lock protects metadata and state, not
+ *   individual buffer operations.
+ *
+ *   Never hold multiple stream locks simultaneously.
+ *   For operations spanning streams, acquire conn->lock instead.
+ */
+
+/*
+ * struct tquic_sock lock notes:
+ * -----------------------------
+ *
+ * The socket lock (sk->sk_lock) is the top-level lock.
+ * Access via lock_sock(sk)/release_sock(sk) for process context,
+ * or bh_lock_sock()/bh_unlock_sock() for softirq context.
+ *
+ * tquic_sock fields protected by socket lock:
+ *   - conn (pointer to connection)
+ *   - bind_addr, connect_addr
+ *   - accept_queue (list operations)
+ *   - accept_queue_len
+ *   - default_stream
+ *   - nodelay and other socket options
+ *
+ * The accept_queue may use sk_lock.slock for softirq-safe access
+ * when checking queue state from incoming packet handling.
+ */
+
+/*
  * Connection lock helpers
  *
  * These provide softirq-safe locking for connection state.
