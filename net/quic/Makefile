@@ -21,4 +21,5 @@ quic-y := \
 	output.o \
 	tquic_bonding.o \
 	tquic_reorder.o \
-	tquic_failover.o
+	tquic_failover.o \
+	sched_minrtt.o
