@@ -8,4 +8,5 @@ obj-$(CONFIG_TQUIC_PATH_MANAGER) += tquic_pm.o
 tquic_pm-y := \
 	pm_types.o \
 	path_manager.o \
-	pm_netlink.o
+	pm_netlink.o \
+	pm_userspace.o

@@ -132,4 +132,9 @@ void __exit tquic_pm_nl_exit(void);
 int tquic_pm_nl_send_event(struct net *net, struct tquic_connection *conn,
 			   struct tquic_path *path, int event_type);
 
+/* Userspace PM */
+int __init tquic_pm_userspace_init(void);
+void __exit tquic_pm_userspace_exit(void);
+extern struct tquic_pm_ops userspace_pm_ops;
+
 #endif /* _NET_TQUIC_PM_H */
