@@ -327,4 +327,52 @@ extern struct lock_class_key tquic_conn_lock_key;
 extern struct lock_class_key tquic_path_lock_key;
 extern struct lock_class_key tquic_stream_lock_key;
 
+/*
+ * Handshake functions (tquic_handshake.c)
+ *
+ * These functions implement TLS 1.3 handshake via net/handshake
+ * delegation to the tlshd userspace daemon.
+ */
+int tquic_start_handshake(struct sock *sk);
+int tquic_wait_for_handshake(struct sock *sk, u32 timeout_ms);
+void tquic_handshake_cleanup(struct sock *sk);
+void tquic_handshake_done(void *data, int status, key_serial_t peerid);
+bool tquic_handshake_in_progress(struct sock *sk);
+
+/*
+ * =============================================================================
+ * UDP LISTENER REGISTRATION
+ * =============================================================================
+ *
+ * These functions register/unregister listening sockets for incoming
+ * QUIC connections. The listener table is used by the UDP receive path
+ * to demultiplex incoming Initial packets to the correct listener.
+ */
+
+/* Listener registration (tquic_udp.c) */
+int tquic_register_listener(struct sock *sk);
+void tquic_unregister_listener(struct sock *sk);
+
+/* Listener lookup (tquic_udp.c) */
+struct sock *tquic_lookup_listener(const struct sockaddr_storage *local_addr);
+
+/* Listener flag for tquic_sock.flags */
+#define TQUIC_F_LISTENER_REGISTERED	BIT(5)
+
+/*
+ * =============================================================================
+ * SERVER HANDSHAKE
+ * =============================================================================
+ *
+ * Server-side handshake functions for accepting incoming connections.
+ */
+
+/* Server handshake (tquic_handshake.c) */
+int tquic_server_handshake(struct sock *listener_sk,
+			   struct sk_buff *initial_pkt,
+			   struct sockaddr_storage *client_addr);
+
+/* Crypto state installation after handshake (tquic_handshake.c) */
+void tquic_install_crypto_state(struct sock *sk);
+
 #endif /* _NET_TQUIC_PROTOCOL_H */

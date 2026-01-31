@@ -154,6 +154,9 @@ static void tquic_destroy_sock(struct sock *sk)
 {
 	struct tquic_sock *tsk = tquic_sk(sk);
 
+	/* Clean up any in-progress handshake */
+	tquic_handshake_cleanup(sk);
+
 	if (tsk->conn) {
 		if (tsk->conn->scheduler)
 			tquic_bond_cleanup(tsk->conn->scheduler);
@@ -173,6 +176,10 @@ static int tquic_release(struct socket *sock)
 
 	if (!sk)
 		return 0;
+
+	/* Unregister from listener table if we were listening */
+	if (sk->sk_state == TCP_LISTEN)
+		tquic_unregister_listener(sk);
 
 	sock->sk = NULL;
 	sock_put(sk);
@@ -212,6 +219,14 @@ static int tquic_connect_socket(struct socket *sock, struct sockaddr *addr,
 
 /*
  * Connect implementation
+ *
+ * Implements blocking connect() with TLS 1.3 handshake.
+ * Per CONTEXT.md, connect() blocks until handshake completes or
+ * a fixed 30-second timeout expires.
+ *
+ * State transitions:
+ *   TCP_CLOSE -> TCP_SYN_SENT -> TCP_ESTABLISHED (success)
+ *   TCP_CLOSE -> TCP_SYN_SENT -> TCP_CLOSE (failure)
  */
 int tquic_connect(struct sock *sk, struct sockaddr *addr, int addr_len)
 {
@@ -225,48 +240,116 @@ int tquic_connect(struct sock *sk, struct sockaddr *addr, int addr_len)
 	if (addr_len < sizeof(struct sockaddr_in))
 		return -EINVAL;
 
-	memcpy(&tsk->connect_addr, addr, min_t(size_t, addr_len,
-					       sizeof(struct sockaddr_storage)));
+	lock_sock(sk);
+
+	/* Store peer address */
+	memcpy(&tsk->connect_addr, addr,
+	       min_t(size_t, addr_len, sizeof(struct sockaddr_storage)));
 
 	/* Add initial path */
 	ret = tquic_conn_add_path(conn, (struct sockaddr *)&tsk->bind_addr,
 				  (struct sockaddr *)&tsk->connect_addr);
 	if (ret < 0)
-		return ret;
+		goto out_unlock;
 
-	/* Initialize the connection state machine for client mode */
+	/* Initialize connection state machine for client mode */
 	ret = tquic_conn_client_connect(conn, addr);
 	if (ret < 0)
-		return ret;
+		goto out_unlock;
 
+	/* Set state before handshake */
 	inet_sk_set_state(sk, TCP_SYN_SENT);
 
-	/*
-	 * The actual handshake will be completed asynchronously.
-	 * For now, we simulate immediate connection for testing.
-	 * In production, the state transition to CONNECTED happens
-	 * when the handshake completes via tquic_conn_process_handshake().
-	 */
-	if (conn->state == TQUIC_CONN_CONNECTED)
-		inet_sk_set_state(sk, TCP_ESTABLISHED);
+	/* Initiate TLS handshake (async via net/handshake) */
+	ret = tquic_start_handshake(sk);
+	if (ret < 0)
+		goto out_close;
 
-	pr_debug("tquic: client connection initiated\n");
+	release_sock(sk);
+
+	/*
+	 * Block until handshake completes (per CONTEXT.md).
+	 * Timeout is fixed at 30 seconds, not configurable per-socket.
+	 */
+	ret = tquic_wait_for_handshake(sk, TQUIC_HANDSHAKE_TIMEOUT_MS);
+
+	lock_sock(sk);
+
+	if (ret < 0) {
+		/* Handshake failed or timed out */
+		goto out_close;
+	}
+
+	/* Verify handshake actually completed */
+	if (!(tsk->flags & TQUIC_F_HANDSHAKE_DONE)) {
+		ret = -EQUIC_HANDSHAKE_FAILED;
+		goto out_close;
+	}
+
+	inet_sk_set_state(sk, TCP_ESTABLISHED);
+	release_sock(sk);
+
+	pr_debug("tquic: client connection established\n");
 	return 0;
+
+out_close:
+	inet_sk_set_state(sk, TCP_CLOSE);
+	sk->sk_err = -ret;  /* Store error for getsockopt */
+out_unlock:
+	release_sock(sk);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(tquic_connect);
 
 /*
  * Listen for incoming connections
+ *
+ * Sets up the socket to receive incoming QUIC connections.
+ * Registers with the UDP demux layer and transitions to TCP_LISTEN state.
  */
 static int tquic_listen(struct socket *sock, int backlog)
 {
 	struct sock *sk = sock->sk;
 	struct tquic_sock *tsk = tquic_sk(sk);
+	int ret;
+
+	lock_sock(sk);
+
+	if (sock->state != SS_UNCONNECTED) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* Validate backlog */
+	if (backlog < 0)
+		backlog = 0;
+	if (backlog > SOMAXCONN)
+		backlog = SOMAXCONN;
 
 	tsk->max_accept_queue = backlog;
-	inet_sk_set_state(sk, TCP_LISTEN);
 
-	return 0;
+	/* Initialize accept queue if not already done */
+	if (list_empty(&tsk->accept_queue))
+		INIT_LIST_HEAD(&tsk->accept_queue);
+	tsk->accept_queue_len = 0;
+
+	/* Register with UDP demux to receive incoming packets */
+	ret = tquic_register_listener(sk);
+	if (ret < 0) {
+		pr_err("tquic: failed to register listener: %d\n", ret);
+		goto out;
+	}
+
+	/* Transition to listen state */
+	inet_sk_set_state(sk, TCP_LISTEN);
+	sock->state = SS_CONNECTED;  /* Mark as ready for accept */
+
+	pr_debug("tquic: listening on socket, backlog=%d\n", backlog);
+	ret = 0;
+
+out:
+	release_sock(sk);
+	return ret;
 }
 
 /*
