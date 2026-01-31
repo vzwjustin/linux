@@ -337,6 +337,9 @@ struct tquic_connection {
 	struct rhash_head node;
 };
 
+/* Forward declaration for handshake state */
+struct tquic_handshake_state;
+
 /**
  * struct tquic_sock - TQUIC socket structure
  * @inet: Inet connection socket base
@@ -347,6 +350,8 @@ struct tquic_connection {
  * @accept_queue_len: Length of accept queue
  * @max_accept_queue: Maximum accept queue length
  * @default_stream: Default stream for simple operations
+ * @handshake_state: TLS handshake state (during connection)
+ * @flags: Socket flags (TQUIC_F_*)
  * @nodelay: Disable Nagle algorithm (TQUIC_NODELAY option)
  */
 struct tquic_sock {
@@ -361,6 +366,12 @@ struct tquic_sock {
 	u32 max_accept_queue;
 
 	struct tquic_stream *default_stream;
+
+	/* Handshake state (NULL when not in handshake) */
+	struct tquic_handshake_state *handshake_state;
+
+	/* Socket flags (TQUIC_F_*) - see net/tquic/protocol.h */
+	u32 flags;
 
 	/* Socket options */
 	bool nodelay;		/* TQUIC_NODELAY: disable Nagle, send immediately */
