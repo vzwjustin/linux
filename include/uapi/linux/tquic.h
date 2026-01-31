@@ -333,6 +333,77 @@ enum tquic_nl_groups {
 #define TQUIC_HANDSHAKE_TIMEOUT_MS	30000  /* Fixed 30 second timeout */
 
 /*
+ * Connection Migration Socket Options
+ *
+ * Note: Full migration implementation in Phase 4 (Path Manager).
+ * Phase 2 provides API surface with stub implementations.
+ */
+#define TQUIC_MIGRATE           70  /* Trigger explicit migration to new address */
+#define TQUIC_MIGRATE_STATUS    71  /* Get migration status (read-only) */
+#define TQUIC_MIGRATION_ENABLED 72  /* Enable/disable automatic migration */
+
+/**
+ * struct tquic_migrate_args - Arguments for TQUIC_MIGRATE sockopt
+ * @local_addr: New local address to migrate to
+ * @flags: Migration flags
+ * @reserved: Reserved, must be 0
+ *
+ * Used with setsockopt(TQUIC_MIGRATE) to trigger explicit migration.
+ */
+struct tquic_migrate_args {
+	struct sockaddr_storage local_addr;
+	__u32 flags;
+	__u32 reserved;
+};
+
+/* Migration flags */
+#define TQUIC_MIGRATE_FLAG_PROBE_ONLY  (1 << 0)  /* Only probe, don't switch */
+#define TQUIC_MIGRATE_FLAG_FORCE       (1 << 1)  /* Force even if current path ok */
+
+/**
+ * enum tquic_migrate_status - Migration state
+ */
+enum tquic_migrate_status {
+	TQUIC_MIGRATE_NONE = 0,      /* No migration in progress */
+	TQUIC_MIGRATE_PROBING,       /* PATH_CHALLENGE sent, awaiting response */
+	TQUIC_MIGRATE_VALIDATED,     /* New path validated, migration complete */
+	TQUIC_MIGRATE_FAILED,        /* Migration failed (timeout, etc.) */
+};
+
+/**
+ * struct tquic_migrate_info - Migration status information
+ * @status: Current migration status
+ * @old_path_id: Previous path ID
+ * @new_path_id: New path ID (if migrating)
+ * @probe_rtt: RTT of PATH_CHALLENGE/RESPONSE (us)
+ * @error_code: Error code if failed
+ * @reserved: Reserved for alignment
+ * @old_local: Previous local address
+ * @new_local: New local address
+ * @remote: Remote address
+ *
+ * Used with getsockopt(TQUIC_MIGRATE_STATUS) to poll migration status.
+ */
+struct tquic_migrate_info {
+	__u32 status;
+	__u32 old_path_id;
+	__u32 new_path_id;
+	__u32 probe_rtt;
+	__u32 error_code;
+	__u32 reserved;
+	struct sockaddr_storage old_local;
+	struct sockaddr_storage new_local;
+	struct sockaddr_storage remote;
+};
+
+/*
+ * Connection ID limits
+ */
+#define TQUIC_CID_POOL_MIN          2   /* Minimum CIDs to maintain */
+#define TQUIC_CID_POOL_DEFAULT      8   /* Default CID pool size */
+#define TQUIC_ACTIVE_CID_LIMIT      8   /* Max active CIDs (transport param) */
+
+/*
  * TQUIC Stream ioctls
  *
  * Use ioctl on connection socket to create stream file descriptors.

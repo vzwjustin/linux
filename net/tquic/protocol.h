@@ -375,4 +375,80 @@ int tquic_server_handshake(struct sock *listener_sk,
 /* Crypto state installation after handshake (tquic_handshake.c) */
 void tquic_install_crypto_state(struct sock *sk);
 
+/*
+ * =============================================================================
+ * CONNECTION ID POOL MANAGEMENT
+ * =============================================================================
+ *
+ * CID pool maintains connection IDs per RFC 9000 Section 5.1.
+ * Each connection maintains a pool of local CIDs for rotation and migration.
+ */
+
+/* Forward declaration */
+struct tquic_cid_pool;
+
+/* CID constants */
+#define TQUIC_DEFAULT_CID_LEN           8
+#define TQUIC_STATELESS_RESET_TOKEN_LEN 16
+
+/* CID pool functions (tquic_cid.c) */
+int tquic_cid_pool_init(struct tquic_connection *conn);
+void tquic_cid_pool_destroy(struct tquic_connection *conn);
+int tquic_cid_issue(struct tquic_connection *conn, struct tquic_cid *cid);
+int tquic_cid_retire(struct tquic_connection *conn, u64 seq_num);
+struct tquic_connection *tquic_cid_lookup(const struct tquic_cid *cid);
+int tquic_cid_get_for_migration(struct tquic_connection *conn,
+				struct tquic_cid *cid);
+
+/* CID frame stubs (tquic_cid.c, full impl Phase 3) */
+void tquic_send_new_connection_id(struct tquic_connection *conn,
+				  const struct tquic_cid *cid,
+				  const u8 *reset_token);
+void tquic_send_retire_connection_id(struct tquic_connection *conn, u64 seq_num);
+
+/* CID table init/exit */
+int __init tquic_cid_table_init(void);
+void __exit tquic_cid_table_exit(void);
+
+/*
+ * =============================================================================
+ * CONNECTION MIGRATION
+ * =============================================================================
+ *
+ * Migration API surface for Phase 2.
+ * Full implementation in Phase 4 (Path Manager).
+ */
+
+/* Migration flag for tquic_sock.flags */
+#define TQUIC_F_MIGRATION_ENABLED	BIT(6)
+
+/* Migration functions (tquic_migration.c) */
+int tquic_migrate_auto(struct tquic_connection *conn,
+		       struct tquic_path *path,
+		       struct sockaddr_storage *new_addr);
+int tquic_migrate_explicit(struct tquic_connection *conn,
+			   struct sockaddr_storage *new_local,
+			   u32 flags);
+int tquic_migration_get_status(struct tquic_connection *conn,
+			       struct tquic_migrate_info *info);
+void tquic_migration_cleanup(struct tquic_connection *conn);
+
+/* Path management function stubs (tquic_migration.c)
+ * Full implementation in Phase 4 (Path Manager) */
+struct tquic_path *tquic_path_find_by_addr(struct tquic_connection *conn,
+					   const struct sockaddr_storage *addr);
+struct tquic_path *tquic_path_create(struct tquic_connection *conn,
+				     const struct sockaddr_storage *local,
+				     const struct sockaddr_storage *remote);
+void tquic_path_free(struct tquic_path *path);
+int tquic_migration_send_path_challenge(struct tquic_connection *conn,
+					struct tquic_path *path);
+void tquic_migration_path_event(struct tquic_connection *conn,
+				struct tquic_path *path, int event);
+
+/* Path event types for migration */
+#define TQUIC_PATH_EVENT_MIGRATE_START	1
+#define TQUIC_PATH_EVENT_MIGRATE_FAILED	2
+#define TQUIC_PATH_EVENT_MIGRATE_STANDBY	3
+
 #endif /* _NET_TQUIC_PROTOCOL_H */
