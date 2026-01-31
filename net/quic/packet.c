@@ -1,1074 +1,1110 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * QUIC Packet Handling
+ * QUIC - Quick UDP Internet Connections
  *
- * Implementation of QUIC packet parsing, construction, and frame handling
- * according to RFC 9000 and RFC 9001.
+ * Packet processing implementation
  *
- * Copyright (c) 2024
+ * Copyright (c) 2024 Linux QUIC Authors
  */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/skbuff.h>
-#include <linux/random.h>
 #include <linux/slab.h>
-#include <linux/list.h>
-#include <linux/rbtree.h>
-#include <linux/spinlock.h>
-#include <linux/hrtimer.h>
-#include <net/sock.h>
-#include <net/udp.h>
-#include <net/inet_common.h>
-#include <net/ip.h>
+#include <linux/skbuff.h>
 #include <net/quic.h>
-#include <net/tquic.h>
-#include <uapi/linux/quic.h>
 
-/*
- * QUIC Variable-Length Integer Encoding (RFC 9000 Section 16)
- */
+/* QUIC packet header forms */
+#define QUIC_HEADER_FORM_LONG	0x80
+#define QUIC_HEADER_FORM_SHORT	0x00
+#define QUIC_FIXED_BIT		0x40
 
-/**
- * quic_varint_encode - Encode a variable-length integer
- * @buf: Buffer to write to
- * @val: Value to encode
- * @len: Available buffer length
- *
- * Returns: Number of bytes written, or negative error
- */
-int quic_varint_encode(u8 *buf, u64 val, size_t len)
+/* Long header packet types */
+#define QUIC_LONG_TYPE_INITIAL		0x00
+#define QUIC_LONG_TYPE_0RTT		0x01
+#define QUIC_LONG_TYPE_HANDSHAKE	0x02
+#define QUIC_LONG_TYPE_RETRY		0x03
+
+/* QUIC packet control block for skb->cb */
+struct quic_skb_cb {
+	u64	pn;
+	u32	header_len;
+	u8	pn_len;
+	u8	packet_type;
+	u8	dcid_len;
+	u8	scid_len;
+};
+
+#define QUIC_SKB_CB(skb) ((struct quic_skb_cb *)((skb)->cb))
+
+/* Parse long header packet */
+static int quic_packet_parse_long(struct sk_buff *skb, u8 first_byte)
 {
-	if (val <= 63) {
-		if (len < 1)
-			return -ENOBUFS;
-		buf[0] = (u8)val;
-		return 1;
-	} else if (val <= 16383) {
-		if (len < 2)
-			return -ENOBUFS;
-		buf[0] = (u8)(0x40 | (val >> 8));
-		buf[1] = (u8)(val & 0xff);
-		return 2;
-	} else if (val <= 1073741823) {
-		if (len < 4)
-			return -ENOBUFS;
-		buf[0] = (u8)(0x80 | (val >> 24));
-		buf[1] = (u8)((val >> 16) & 0xff);
-		buf[2] = (u8)((val >> 8) & 0xff);
-		buf[3] = (u8)(val & 0xff);
-		return 4;
+	struct quic_skb_cb *cb = QUIC_SKB_CB(skb);
+	u8 *data = skb->data;
+	int offset = 1;
+	u32 version;
+	u8 dcid_len, scid_len;
+	u64 token_len = 0;
+	u64 payload_len;
+
+	if (skb->len < 7)
+		return -EINVAL;
+
+	/* Version (4 bytes) */
+	version = (data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4];
+	offset = 5;
+
+	/* Destination Connection ID Length (1 byte) */
+	dcid_len = data[offset++];
+	if (dcid_len > QUIC_MAX_CONNECTION_ID_LEN)
+		return -EINVAL;
+
+	if (skb->len < offset + dcid_len)
+		return -EINVAL;
+
+	cb->dcid_len = dcid_len;
+	offset += dcid_len;
+
+	/* Source Connection ID Length (1 byte) */
+	if (skb->len < offset + 1)
+		return -EINVAL;
+
+	scid_len = data[offset++];
+	if (scid_len > QUIC_MAX_CONNECTION_ID_LEN)
+		return -EINVAL;
+
+	cb->scid_len = scid_len;
+	if (skb->len < offset + scid_len)
+		return -EINVAL;
+
+	offset += scid_len;
+
+	/* Packet type specific handling */
+	cb->packet_type = (first_byte & 0x30) >> 4;
+
+	switch (cb->packet_type) {
+	case QUIC_LONG_TYPE_INITIAL:
+		/* Token Length (variable) */
+		if (skb->len < offset + 1)
+			return -EINVAL;
+
+		{
+			int varint_len = quic_varint_decode(data + offset,
+							    skb->len - offset,
+							    &token_len);
+			if (varint_len < 0)
+				return varint_len;
+			offset += varint_len;
+		}
+
+		/* Skip token */
+		if (skb->len < offset + token_len)
+			return -EINVAL;
+		offset += token_len;
+		break;
+
+	case QUIC_LONG_TYPE_0RTT:
+	case QUIC_LONG_TYPE_HANDSHAKE:
+		/* No token field */
+		break;
+
+	case QUIC_LONG_TYPE_RETRY:
+		/* Retry packet has different format */
+		cb->header_len = offset;
+		return 0;
+
+	default:
+		return -EINVAL;
+	}
+
+	/* Payload Length (variable) */
+	if (skb->len < offset + 1)
+		return -EINVAL;
+
+	{
+		int varint_len = quic_varint_decode(data + offset,
+						    skb->len - offset,
+						    &payload_len);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+	}
+
+	/* Packet Number (1-4 bytes, encoded in pn_len after header unprotection) */
+	cb->header_len = offset;
+
+	return 0;
+}
+
+/* Parse short header packet */
+static int quic_packet_parse_short(struct sk_buff *skb, u8 first_byte,
+				   u8 expected_dcid_len)
+{
+	struct quic_skb_cb *cb = QUIC_SKB_CB(skb);
+	int offset = 1;
+
+	cb->packet_type = QUIC_PACKET_1RTT;
+	cb->dcid_len = expected_dcid_len;
+	cb->scid_len = 0;
+
+	if (skb->len < 1 + expected_dcid_len)
+		return -EINVAL;
+
+	offset += expected_dcid_len;
+	cb->header_len = offset;
+
+	return 0;
+}
+
+int quic_packet_parse(struct sk_buff *skb, struct quic_packet *pkt)
+{
+	u8 first_byte;
+	int err;
+
+	if (skb->len < 1)
+		return -EINVAL;
+
+	first_byte = skb->data[0];
+
+	/* Check fixed bit */
+	if (!(first_byte & QUIC_FIXED_BIT))
+		return -EINVAL;
+
+	memset(QUIC_SKB_CB(skb), 0, sizeof(struct quic_skb_cb));
+
+	if (first_byte & QUIC_HEADER_FORM_LONG) {
+		err = quic_packet_parse_long(skb, first_byte);
 	} else {
-		if (len < 8)
-			return -ENOBUFS;
-		buf[0] = (u8)(0xc0 | (val >> 56));
-		buf[1] = (u8)((val >> 48) & 0xff);
-		buf[2] = (u8)((val >> 40) & 0xff);
-		buf[3] = (u8)((val >> 32) & 0xff);
-		buf[4] = (u8)((val >> 24) & 0xff);
-		buf[5] = (u8)((val >> 16) & 0xff);
-		buf[6] = (u8)((val >> 8) & 0xff);
-		buf[7] = (u8)(val & 0xff);
-		return 8;
-	}
-}
-EXPORT_SYMBOL_GPL(quic_varint_encode);
-
-/**
- * quic_varint_decode - Decode a variable-length integer
- * @buf: Buffer to read from
- * @len: Available buffer length
- * @val: Pointer to store decoded value
- *
- * Returns: Number of bytes read, or negative error
- */
-int quic_varint_decode(const u8 *buf, size_t len, u64 *val)
-{
-	u8 prefix;
-	int enc_len;
-
-	if (len < 1)
-		return -EINVAL;
-
-	prefix = buf[0] >> 6;
-	enc_len = 1 << prefix;
-
-	if (len < enc_len)
-		return -EINVAL;
-
-	switch (enc_len) {
-	case 1:
-		*val = buf[0] & 0x3f;
-		break;
-	case 2:
-		*val = ((u64)(buf[0] & 0x3f) << 8) | buf[1];
-		break;
-	case 4:
-		*val = ((u64)(buf[0] & 0x3f) << 24) |
-		       ((u64)buf[1] << 16) |
-		       ((u64)buf[2] << 8) |
-		       buf[3];
-		break;
-	case 8:
-		*val = ((u64)(buf[0] & 0x3f) << 56) |
-		       ((u64)buf[1] << 48) |
-		       ((u64)buf[2] << 40) |
-		       ((u64)buf[3] << 32) |
-		       ((u64)buf[4] << 24) |
-		       ((u64)buf[5] << 16) |
-		       ((u64)buf[6] << 8) |
-		       buf[7];
-		break;
+		/* For short header, need to know expected DCID length */
+		err = quic_packet_parse_short(skb, first_byte, 8);
 	}
 
-	return enc_len;
+	return err;
 }
-EXPORT_SYMBOL_GPL(quic_varint_decode);
 
-/**
- * quic_varint_len - Get encoding length for a value
- * @val: Value to check
- *
- * Returns: Number of bytes needed to encode value
- */
-int quic_varint_len(u64 val)
+/* Decode packet number from truncated form */
+static u64 quic_decode_pn(u64 largest_pn, u64 truncated_pn, u8 pn_len)
 {
-	if (val <= 63)
-		return 1;
-	else if (val <= 16383)
-		return 2;
-	else if (val <= 1073741823)
-		return 4;
-	else
-		return 8;
-}
-EXPORT_SYMBOL_GPL(quic_varint_len);
-
-/*
- * Packet Number Handling (RFC 9000 Section 17.1)
- */
-
-/**
- * quic_pn_encode - Encode a packet number
- * @pn: Full packet number
- * @largest_acked: Largest acknowledged packet number
- * @buf: Buffer to write to
- * @len: Available buffer length
- *
- * Returns: Number of bytes written (1-4), or negative error
- */
-int quic_pn_encode(u64 pn, u64 largest_acked, u8 *buf, size_t len)
-{
-	u64 range = pn - largest_acked;
-	int pn_len;
-
-	if (range < (1ULL << 7))
-		pn_len = 1;
-	else if (range < (1ULL << 15))
-		pn_len = 2;
-	else if (range < (1ULL << 23))
-		pn_len = 3;
-	else
-		pn_len = 4;
-
-	if (len < pn_len)
-		return -ENOBUFS;
-
-	switch (pn_len) {
-	case 4:
-		buf[0] = (pn >> 24) & 0xff;
-		buf[1] = (pn >> 16) & 0xff;
-		buf[2] = (pn >> 8) & 0xff;
-		buf[3] = pn & 0xff;
-		break;
-	case 3:
-		buf[0] = (pn >> 16) & 0xff;
-		buf[1] = (pn >> 8) & 0xff;
-		buf[2] = pn & 0xff;
-		break;
-	case 2:
-		buf[0] = (pn >> 8) & 0xff;
-		buf[1] = pn & 0xff;
-		break;
-	case 1:
-		buf[0] = pn & 0xff;
-		break;
-	}
-
-	return pn_len;
-}
-EXPORT_SYMBOL_GPL(quic_pn_encode);
-
-/**
- * quic_pn_decode - Decode a truncated packet number
- * @buf: Buffer containing truncated packet number
- * @pn_len: Length of truncated packet number (1-4)
- * @largest_pn: Largest packet number received so far
- *
- * Returns: Full packet number
- */
-u64 quic_pn_decode(const u8 *buf, int pn_len, u64 largest_pn)
-{
-	u64 truncated_pn = 0;
 	u64 expected_pn = largest_pn + 1;
 	u64 pn_win = 1ULL << (pn_len * 8);
 	u64 pn_hwin = pn_win / 2;
 	u64 pn_mask = pn_win - 1;
 	u64 candidate_pn;
-	int i;
-
-	for (i = 0; i < pn_len; i++)
-		truncated_pn = (truncated_pn << 8) | buf[i];
 
 	candidate_pn = (expected_pn & ~pn_mask) | truncated_pn;
 
-	if (candidate_pn <= expected_pn - pn_hwin &&
-	    candidate_pn < (1ULL << 62) - pn_win)
+	if (candidate_pn <= expected_pn - pn_hwin && candidate_pn < (1ULL << 62) - pn_win)
 		return candidate_pn + pn_win;
 
-	if (candidate_pn > expected_pn + pn_hwin &&
-	    candidate_pn >= pn_win)
+	if (candidate_pn > expected_pn + pn_hwin && candidate_pn >= pn_win)
 		return candidate_pn - pn_win;
 
 	return candidate_pn;
 }
-EXPORT_SYMBOL_GPL(quic_pn_decode);
 
-/**
- * quic_pn_get_length - Get packet number encoding length from first byte
- * @first_byte: First byte of short header (after removing protection)
- *
- * Returns: Packet number length (1-4)
- */
-int quic_pn_get_length(u8 first_byte)
+/* Extract truncated packet number */
+static u64 quic_extract_pn(const u8 *data, u8 pn_len)
 {
-	return (first_byte & 0x03) + 1;
-}
-EXPORT_SYMBOL_GPL(quic_pn_get_length);
-
-/*
- * Packet Header Handling
- */
-
-/**
- * quic_packet_is_long_header - Check if packet has long header
- * @buf: Packet buffer
- *
- * Returns: true if long header, false if short header
- */
-bool quic_packet_is_long_header(const u8 *buf)
-{
-	return (buf[0] & 0x80) != 0;
-}
-EXPORT_SYMBOL_GPL(quic_packet_is_long_header);
-
-/**
- * quic_packet_get_type - Get packet type from long header
- * @buf: Packet buffer (must be long header)
- *
- * Returns: Packet type
- */
-int quic_packet_get_type(const u8 *buf)
-{
-	if (!quic_packet_is_long_header(buf))
-		return QUIC_PKT_1RTT;
-
-	switch ((buf[0] & 0x30) >> 4) {
-	case 0x00:
-		return QUIC_PKT_INITIAL;
-	case 0x01:
-		return QUIC_PKT_0RTT;
-	case 0x02:
-		return QUIC_PKT_HANDSHAKE;
-	case 0x03:
-		return QUIC_PKT_RETRY;
-	default:
-		return QUIC_PKT_INVALID;
-	}
-}
-EXPORT_SYMBOL_GPL(quic_packet_get_type);
-
-/**
- * quic_build_long_header - Build a long header packet
- */
-int quic_build_long_header(u8 *buf, size_t len,
-			   int type, u32 version,
-			   const u8 *dcid, u8 dcid_len,
-			   const u8 *scid, u8 scid_len,
-			   const u8 *token, size_t token_len,
-			   size_t payload_len, u64 pn, int pn_len)
-{
-	u8 first_byte;
-	size_t offset = 0;
-	int ret;
-
-	size_t min_len = 1 + 4 + 1 + dcid_len + 1 + scid_len + pn_len;
-	if (type == QUIC_PKT_INITIAL)
-		min_len += quic_varint_len(token_len) + token_len;
-	min_len += quic_varint_len(payload_len);
-
-	if (len < min_len)
-		return -ENOBUFS;
-
-	first_byte = 0xc0;
-	switch (type) {
-	case QUIC_PKT_INITIAL:
-		first_byte |= 0x00;
-		break;
-	case QUIC_PKT_0RTT:
-		first_byte |= 0x10;
-		break;
-	case QUIC_PKT_HANDSHAKE:
-		first_byte |= 0x20;
-		break;
-	default:
-		return -EINVAL;
-	}
-	first_byte |= (pn_len - 1);
-	buf[offset++] = first_byte;
-
-	buf[offset++] = (version >> 24) & 0xff;
-	buf[offset++] = (version >> 16) & 0xff;
-	buf[offset++] = (version >> 8) & 0xff;
-	buf[offset++] = version & 0xff;
-
-	buf[offset++] = dcid_len;
-	if (dcid_len > 0) {
-		memcpy(&buf[offset], dcid, dcid_len);
-		offset += dcid_len;
-	}
-
-	buf[offset++] = scid_len;
-	if (scid_len > 0) {
-		memcpy(&buf[offset], scid, scid_len);
-		offset += scid_len;
-	}
-
-	if (type == QUIC_PKT_INITIAL) {
-		ret = quic_varint_encode(&buf[offset], token_len, len - offset);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-
-		if (token_len > 0 && token) {
-			memcpy(&buf[offset], token, token_len);
-			offset += token_len;
-		}
-	}
-
-	ret = quic_varint_encode(&buf[offset], payload_len, len - offset);
-	if (ret < 0)
-		return ret;
-	offset += ret;
-
-	ret = quic_pn_encode(pn, 0, &buf[offset], len - offset);
-	if (ret != pn_len)
-		return -EINVAL;
-	offset += pn_len;
-
-	return offset;
-}
-EXPORT_SYMBOL_GPL(quic_build_long_header);
-
-/**
- * quic_build_short_header - Build a short header (1-RTT) packet
- */
-int quic_build_short_header(u8 *buf, size_t len,
-			    const u8 *dcid, u8 dcid_len,
-			    u64 pn, int pn_len,
-			    bool key_phase, bool spin_bit)
-{
-	u8 first_byte;
-	size_t offset = 0;
-	int ret;
-
-	if (len < 1 + dcid_len + pn_len)
-		return -ENOBUFS;
-
-	first_byte = 0x40;
-	if (spin_bit)
-		first_byte |= 0x20;
-	if (key_phase)
-		first_byte |= 0x04;
-	first_byte |= (pn_len - 1);
-	buf[offset++] = first_byte;
-
-	if (dcid_len > 0) {
-		memcpy(&buf[offset], dcid, dcid_len);
-		offset += dcid_len;
-	}
-
-	ret = quic_pn_encode(pn, 0, &buf[offset], len - offset);
-	if (ret != pn_len)
-		return -EINVAL;
-	offset += pn_len;
-
-	return offset;
-}
-EXPORT_SYMBOL_GPL(quic_build_short_header);
-
-/**
- * quic_parse_long_header - Parse a long header packet
- */
-int quic_parse_long_header(const u8 *buf, size_t len,
-			   struct quic_packet_header *hdr)
-{
-	size_t offset = 0;
-	int ret;
-	u64 token_len_val, payload_len_val;
-
-	if (len < 7)
-		return -EINVAL;
-
-	hdr->form = 1;
-	hdr->type = quic_packet_get_type(buf);
-	hdr->pn_len = (buf[0] & 0x03) + 1;
-	offset++;
-
-	hdr->version = ((u32)buf[offset] << 24) |
-		       ((u32)buf[offset + 1] << 16) |
-		       ((u32)buf[offset + 2] << 8) |
-		       buf[offset + 3];
-	offset += 4;
-
-	hdr->dcid_len = buf[offset++];
-	if (hdr->dcid_len > QUIC_MAX_CID_LEN || offset + hdr->dcid_len > len)
-		return -EINVAL;
-	memcpy(hdr->dcid, &buf[offset], hdr->dcid_len);
-	offset += hdr->dcid_len;
-
-	if (offset >= len)
-		return -EINVAL;
-	hdr->scid_len = buf[offset++];
-	if (hdr->scid_len > QUIC_MAX_CID_LEN || offset + hdr->scid_len > len)
-		return -EINVAL;
-	memcpy(hdr->scid, &buf[offset], hdr->scid_len);
-	offset += hdr->scid_len;
-
-	if (hdr->type == QUIC_PKT_INITIAL) {
-		ret = quic_varint_decode(&buf[offset], len - offset, &token_len_val);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-		hdr->token_len = token_len_val;
-
-		if (hdr->token_len > 0) {
-			if (offset + hdr->token_len > len)
-				return -EINVAL;
-			hdr->token = &buf[offset];
-			offset += hdr->token_len;
-		}
-	} else {
-		hdr->token = NULL;
-		hdr->token_len = 0;
-	}
-
-	ret = quic_varint_decode(&buf[offset], len - offset, &payload_len_val);
-	if (ret < 0)
-		return ret;
-	offset += ret;
-	hdr->payload_len = payload_len_val;
-
-	hdr->pn_offset = offset;
-
-	if (offset + hdr->pn_len > len)
-		return -EINVAL;
-
-	hdr->header_len = offset + hdr->pn_len;
-
-	return hdr->header_len;
-}
-EXPORT_SYMBOL_GPL(quic_parse_long_header);
-
-/**
- * quic_parse_short_header - Parse a short header packet
- */
-int quic_parse_short_header(const u8 *buf, size_t len, u8 dcid_len,
-			    struct quic_packet_header *hdr)
-{
-	size_t offset = 0;
-
-	if (len < 1 + dcid_len + 1)
-		return -EINVAL;
-
-	hdr->form = 0;
-	hdr->type = QUIC_PKT_1RTT;
-	hdr->spin_bit = (buf[0] & 0x20) != 0;
-	hdr->key_phase = (buf[0] & 0x04) != 0;
-	hdr->pn_len = (buf[0] & 0x03) + 1;
-	offset++;
-
-	hdr->dcid_len = dcid_len;
-	if (offset + dcid_len > len)
-		return -EINVAL;
-	memcpy(hdr->dcid, &buf[offset], dcid_len);
-	offset += dcid_len;
-
-	hdr->scid_len = 0;
-	hdr->version = 0;
-	hdr->token = NULL;
-	hdr->token_len = 0;
-
-	hdr->pn_offset = offset;
-
-	if (offset + hdr->pn_len > len)
-		return -EINVAL;
-
-	hdr->header_len = offset + hdr->pn_len;
-
-	return hdr->header_len;
-}
-EXPORT_SYMBOL_GPL(quic_parse_short_header);
-
-/*
- * Frame Building Functions
- */
-
-int quic_build_padding_frame(u8 *buf, size_t len)
-{
-	memset(buf, QUIC_FRAME_PADDING, len);
-	return len;
-}
-EXPORT_SYMBOL_GPL(quic_build_padding_frame);
-
-int quic_build_ping_frame(u8 *buf, size_t len)
-{
-	if (len < 1)
-		return -ENOBUFS;
-	buf[0] = QUIC_FRAME_PING;
-	return 1;
-}
-EXPORT_SYMBOL_GPL(quic_build_ping_frame);
-
-int quic_build_ack_frame(u8 *buf, size_t len,
-			 u64 largest_acked, u64 ack_delay,
-			 u64 first_range,
-			 const struct quic_ack_range *ranges,
-			 size_t range_count,
-			 const struct quic_ecn_counts *ecn)
-{
-	size_t offset = 0;
-	int ret;
-	size_t i;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[offset++] = ecn ? QUIC_FRAME_ACK_ECN : QUIC_FRAME_ACK;
-
-	ret = quic_varint_encode(&buf[offset], largest_acked, len - offset);
-	if (ret < 0)
-		return ret;
-	offset += ret;
-
-	ret = quic_varint_encode(&buf[offset], ack_delay, len - offset);
-	if (ret < 0)
-		return ret;
-	offset += ret;
-
-	ret = quic_varint_encode(&buf[offset], range_count, len - offset);
-	if (ret < 0)
-		return ret;
-	offset += ret;
-
-	ret = quic_varint_encode(&buf[offset], first_range, len - offset);
-	if (ret < 0)
-		return ret;
-	offset += ret;
-
-	for (i = 0; i < range_count && ranges; i++) {
-		ret = quic_varint_encode(&buf[offset], ranges[i].gap, len - offset);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-
-		ret = quic_varint_encode(&buf[offset], ranges[i].length, len - offset);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-	}
-
-	if (ecn) {
-		ret = quic_varint_encode(&buf[offset], ecn->ect0, len - offset);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-
-		ret = quic_varint_encode(&buf[offset], ecn->ect1, len - offset);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-
-		ret = quic_varint_encode(&buf[offset], ecn->ce, len - offset);
-		if (ret < 0)
-			return ret;
-		offset += ret;
-	}
-
-	return offset;
-}
-EXPORT_SYMBOL_GPL(quic_build_ack_frame);
-
-int quic_build_crypto_frame(u8 *buf, size_t len,
-			    u64 offset_val, const u8 *data, size_t data_len)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = QUIC_FRAME_CRYPTO;
-
-	ret = quic_varint_encode(&buf[pos], offset_val, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	ret = quic_varint_encode(&buf[pos], data_len, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	if (pos + data_len > len)
-		return -ENOBUFS;
-	memcpy(&buf[pos], data, data_len);
-	pos += data_len;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_crypto_frame);
-
-int quic_build_stream_frame(u8 *buf, size_t len,
-			    u64 stream_id, u64 offset_val,
-			    const u8 *data, size_t data_len,
-			    bool fin, bool include_len, bool include_off)
-{
-	size_t pos = 0;
-	int ret;
-	u8 frame_type;
-
-	frame_type = QUIC_FRAME_STREAM;
-	if (include_off)
-		frame_type |= 0x04;
-	if (include_len)
-		frame_type |= 0x02;
-	if (fin)
-		frame_type |= 0x01;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = frame_type;
-
-	ret = quic_varint_encode(&buf[pos], stream_id, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	if (include_off) {
-		ret = quic_varint_encode(&buf[pos], offset_val, len - pos);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-	}
-
-	if (include_len) {
-		ret = quic_varint_encode(&buf[pos], data_len, len - pos);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-	}
-
-	if (pos + data_len > len)
-		return -ENOBUFS;
-	memcpy(&buf[pos], data, data_len);
-	pos += data_len;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_stream_frame);
-
-int quic_build_max_data_frame(u8 *buf, size_t len, u64 max_data)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = QUIC_FRAME_MAX_DATA;
-
-	ret = quic_varint_encode(&buf[pos], max_data, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_max_data_frame);
-
-int quic_build_max_stream_data_frame(u8 *buf, size_t len,
-				     u64 stream_id, u64 max_data)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = QUIC_FRAME_MAX_STREAM_DATA;
-
-	ret = quic_varint_encode(&buf[pos], stream_id, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	ret = quic_varint_encode(&buf[pos], max_data, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_max_stream_data_frame);
-
-int quic_build_max_streams_frame(u8 *buf, size_t len, u64 max_streams, bool bidi)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = bidi ? QUIC_FRAME_MAX_STREAMS_BIDI : QUIC_FRAME_MAX_STREAMS_UNI;
-
-	ret = quic_varint_encode(&buf[pos], max_streams, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_max_streams_frame);
-
-int quic_build_connection_close_frame(u8 *buf, size_t len,
-				      u64 error_code, u64 frame_type,
-				      const u8 *reason, size_t reason_len,
-				      bool is_app_error)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = is_app_error ? QUIC_FRAME_CONN_CLOSE_APP : QUIC_FRAME_CONN_CLOSE;
-
-	ret = quic_varint_encode(&buf[pos], error_code, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	if (!is_app_error) {
-		ret = quic_varint_encode(&buf[pos], frame_type, len - pos);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-	}
-
-	ret = quic_varint_encode(&buf[pos], reason_len, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	if (reason_len > 0 && reason) {
-		if (pos + reason_len > len)
-			return -ENOBUFS;
-		memcpy(&buf[pos], reason, reason_len);
-		pos += reason_len;
-	}
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_connection_close_frame);
-
-int quic_build_path_challenge_frame(u8 *buf, size_t len, const u8 *data)
-{
-	if (len < 9)
-		return -ENOBUFS;
-
-	buf[0] = QUIC_FRAME_PATH_CHALLENGE;
-	memcpy(&buf[1], data, 8);
-	return 9;
-}
-EXPORT_SYMBOL_GPL(quic_build_path_challenge_frame);
-
-int quic_build_path_response_frame(u8 *buf, size_t len, const u8 *data)
-{
-	if (len < 9)
-		return -ENOBUFS;
-
-	buf[0] = QUIC_FRAME_PATH_RESPONSE;
-	memcpy(&buf[1], data, 8);
-	return 9;
-}
-EXPORT_SYMBOL_GPL(quic_build_path_response_frame);
-
-int quic_build_new_connection_id_frame(u8 *buf, size_t len,
-				       u64 seq_num, u64 retire_prior_to,
-				       const u8 *cid, u8 cid_len,
-				       const u8 *reset_token)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = QUIC_FRAME_NEW_CONN_ID;
-
-	ret = quic_varint_encode(&buf[pos], seq_num, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	ret = quic_varint_encode(&buf[pos], retire_prior_to, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	if (pos + 1 + cid_len + 16 > len)
-		return -ENOBUFS;
-	buf[pos++] = cid_len;
-	memcpy(&buf[pos], cid, cid_len);
-	pos += cid_len;
-
-	memcpy(&buf[pos], reset_token, 16);
-	pos += 16;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_new_connection_id_frame);
-
-int quic_build_retire_connection_id_frame(u8 *buf, size_t len, u64 seq_num)
-{
-	size_t pos = 0;
-	int ret;
-
-	if (len < 1)
-		return -ENOBUFS;
-	buf[pos++] = QUIC_FRAME_RETIRE_CONN_ID;
-
-	ret = quic_varint_encode(&buf[pos], seq_num, len - pos);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_build_retire_connection_id_frame);
-
-int quic_build_handshake_done_frame(u8 *buf, size_t len)
-{
-	if (len < 1)
-		return -ENOBUFS;
-	buf[0] = QUIC_FRAME_HANDSHAKE_DONE;
-	return 1;
-}
-EXPORT_SYMBOL_GPL(quic_build_handshake_done_frame);
-
-/*
- * Frame Parsing Functions
- */
-
-int quic_parse_frame_type(const u8 *buf, size_t len, u64 *frame_type)
-{
-	return quic_varint_decode(buf, len, frame_type);
-}
-EXPORT_SYMBOL_GPL(quic_parse_frame_type);
-
-int quic_parse_ack_frame(const u8 *buf, size_t len, struct quic_ack_frame *ack)
-{
-	size_t pos = 0;
-	int ret;
-	u64 range_count, val;
-	size_t i;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &ack->largest_acked);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &ack->ack_delay);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &range_count);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-	ack->range_count = range_count;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &ack->first_range);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	for (i = 0; i < range_count; i++) {
-		ret = quic_varint_decode(&buf[pos], len - pos, &val);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-
-		ret = quic_varint_decode(&buf[pos], len - pos, &val);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-	}
-
-	ack->frame_len = pos;
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_parse_ack_frame);
-
-int quic_parse_stream_frame(const u8 *buf, size_t len,
-			    struct quic_stream_frame *frame)
-{
-	size_t pos = 0;
-	int ret;
-	u8 type_byte;
-
-	if (len < 1)
-		return -EINVAL;
-
-	type_byte = buf[pos++];
-	frame->fin = (type_byte & 0x01) != 0;
-	frame->has_length = (type_byte & 0x02) != 0;
-	frame->has_offset = (type_byte & 0x04) != 0;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &frame->stream_id);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	if (frame->has_offset) {
-		ret = quic_varint_decode(&buf[pos], len - pos, &frame->offset);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-	} else {
-		frame->offset = 0;
-	}
-
-	if (frame->has_length) {
-		u64 data_len;
-		ret = quic_varint_decode(&buf[pos], len - pos, &data_len);
-		if (ret < 0)
-			return ret;
-		pos += ret;
-		frame->data_len = data_len;
-	} else {
-		frame->data_len = len - pos;
-	}
-
-	if (pos + frame->data_len > len)
-		return -EINVAL;
-	frame->data = &buf[pos];
-	pos += frame->data_len;
-
-	frame->frame_len = pos;
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_parse_stream_frame);
-
-int quic_parse_crypto_frame(const u8 *buf, size_t len,
-			    struct quic_crypto_frame *frame)
-{
-	size_t pos = 0;
-	int ret;
-	u64 data_len;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &frame->offset);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-
-	ret = quic_varint_decode(&buf[pos], len - pos, &data_len);
-	if (ret < 0)
-		return ret;
-	pos += ret;
-	frame->data_len = data_len;
-
-	if (pos + frame->data_len > len)
-		return -EINVAL;
-	frame->data = &buf[pos];
-	pos += frame->data_len;
-
-	frame->frame_len = pos;
-	return pos;
-}
-EXPORT_SYMBOL_GPL(quic_parse_crypto_frame);
-
-/*
- * Packet Number Space Helpers
- */
-
-int quic_pkt_type_to_pn_space(int type)
-{
-	switch (type) {
-	case QUIC_PKT_INITIAL:
-		return QUIC_PN_SPACE_INITIAL;
-	case QUIC_PKT_HANDSHAKE:
-		return QUIC_PN_SPACE_HANDSHAKE;
-	case QUIC_PKT_0RTT:
-	case QUIC_PKT_1RTT:
-	default:
-		return QUIC_PN_SPACE_APPLICATION;
-	}
-}
-EXPORT_SYMBOL_GPL(quic_pkt_type_to_pn_space);
-
-/*
- * Packet Transmission
- */
-
-struct sk_buff *quic_alloc_skb(size_t size)
-{
-	struct sk_buff *skb;
-
-	skb = alloc_skb(size + 256, GFP_ATOMIC);
-	if (!skb)
-		return NULL;
-
-	skb_reserve(skb, 128);
-	return skb;
-}
-EXPORT_SYMBOL_GPL(quic_alloc_skb);
-
-struct sk_buff *quic_coalesce_packets(struct sk_buff **packets, int count)
-{
-	struct sk_buff *skb;
-	size_t total_len = 0;
-	u8 *ptr;
+	u64 pn = 0;
 	int i;
 
-	for (i = 0; i < count; i++)
-		total_len += packets[i]->len;
+	for (i = 0; i < pn_len; i++)
+		pn = (pn << 8) | data[i];
 
-	if (total_len > QUIC_MAX_UDP_PAYLOAD)
-		return NULL;
+	return pn;
+}
 
-	skb = alloc_skb(total_len + 256, GFP_ATOMIC);
+struct sk_buff *quic_packet_build(struct quic_connection *conn,
+				  struct quic_pn_space *pn_space)
+{
+	struct sk_buff *skb;
+	struct sk_buff *frame_skb;
+	u8 *p;
+	u8 first_byte;
+	u64 pn;
+	u8 pn_len;
+	int pn_offset;
+	int header_len;
+	int max_payload;
+	int payload_len = 0;
+
+	skb = alloc_skb(QUIC_MAX_PACKET_SIZE + 128, GFP_ATOMIC);
 	if (!skb)
 		return NULL;
 
-	skb_reserve(skb, 128);
-	ptr = skb_put(skb, total_len);
+	skb_reserve(skb, 64);  /* Room for UDP/IP headers */
 
-	for (i = 0; i < count; i++) {
-		skb_copy_bits(packets[i], 0, ptr, packets[i]->len);
-		ptr += packets[i]->len;
-		kfree_skb(packets[i]);
+	pn = pn_space->next_pn++;
+
+	/* Determine packet number encoding length */
+	if (pn < 0x100)
+		pn_len = 1;
+	else if (pn < 0x10000)
+		pn_len = 2;
+	else if (pn < 0x1000000)
+		pn_len = 3;
+	else
+		pn_len = 4;
+
+	/* Build header based on crypto level */
+	if (conn->crypto_level == QUIC_CRYPTO_INITIAL ||
+	    conn->crypto_level == QUIC_CRYPTO_HANDSHAKE) {
+		/* Long header */
+		u8 packet_type;
+
+		if (conn->crypto_level == QUIC_CRYPTO_INITIAL)
+			packet_type = QUIC_LONG_TYPE_INITIAL;
+		else
+			packet_type = QUIC_LONG_TYPE_HANDSHAKE;
+
+		first_byte = QUIC_HEADER_FORM_LONG | QUIC_FIXED_BIT |
+			     (packet_type << 4) | (pn_len - 1);
+
+		p = skb_put(skb, 1);
+		*p = first_byte;
+
+		/* Version */
+		p = skb_put(skb, 4);
+		p[0] = (conn->version >> 24) & 0xff;
+		p[1] = (conn->version >> 16) & 0xff;
+		p[2] = (conn->version >> 8) & 0xff;
+		p[3] = conn->version & 0xff;
+
+		/* DCID Length + DCID */
+		p = skb_put(skb, 1);
+		*p = conn->dcid.len;
+		if (conn->dcid.len > 0) {
+			p = skb_put(skb, conn->dcid.len);
+			memcpy(p, conn->dcid.data, conn->dcid.len);
+		}
+
+		/* SCID Length + SCID */
+		p = skb_put(skb, 1);
+		*p = conn->scid.len;
+		if (conn->scid.len > 0) {
+			p = skb_put(skb, conn->scid.len);
+			memcpy(p, conn->scid.data, conn->scid.len);
+		}
+
+		/* Token (only for Initial packets from client) */
+		if (conn->crypto_level == QUIC_CRYPTO_INITIAL) {
+			if (!conn->is_server && conn->qsk->token_len > 0) {
+				p = skb_put(skb, quic_varint_len(conn->qsk->token_len));
+				quic_varint_encode(conn->qsk->token_len, p);
+				p = skb_put(skb, conn->qsk->token_len);
+				memcpy(p, conn->qsk->token, conn->qsk->token_len);
+			} else {
+				p = skb_put(skb, 1);
+				*p = 0;  /* Zero token length */
+			}
+		}
+
+		/* Length field placeholder (2 bytes for now) */
+		p = skb_put(skb, 2);
+		p[0] = 0x40;  /* Will be updated later */
+		p[1] = 0x00;
+
+		pn_offset = skb->len;
+		header_len = pn_offset + pn_len;
+	} else {
+		/* Short header (1-RTT) */
+		first_byte = QUIC_FIXED_BIT | (conn->key_phase << 2) | (pn_len - 1);
+
+		p = skb_put(skb, 1);
+		*p = first_byte;
+
+		/* DCID (no length prefix in short header) */
+		if (conn->dcid.len > 0) {
+			p = skb_put(skb, conn->dcid.len);
+			memcpy(p, conn->dcid.data, conn->dcid.len);
+		}
+
+		pn_offset = skb->len;
+		header_len = pn_offset + pn_len;
 	}
+
+	/* Packet number */
+	p = skb_put(skb, pn_len);
+	switch (pn_len) {
+	case 1:
+		p[0] = pn & 0xff;
+		break;
+	case 2:
+		p[0] = (pn >> 8) & 0xff;
+		p[1] = pn & 0xff;
+		break;
+	case 3:
+		p[0] = (pn >> 16) & 0xff;
+		p[1] = (pn >> 8) & 0xff;
+		p[2] = pn & 0xff;
+		break;
+	case 4:
+		p[0] = (pn >> 24) & 0xff;
+		p[1] = (pn >> 16) & 0xff;
+		p[2] = (pn >> 8) & 0xff;
+		p[3] = pn & 0xff;
+		break;
+	}
+
+	QUIC_SKB_CB(skb)->header_len = header_len;
+	QUIC_SKB_CB(skb)->pn = pn;
+	QUIC_SKB_CB(skb)->pn_len = pn_len;
+
+	/* Add pending frames */
+	max_payload = QUIC_MAX_PACKET_SIZE - header_len - 16;  /* 16 for AEAD tag */
+
+	/* First add any ACK frames */
+	if (quic_ack_should_send(conn, conn->crypto_level)) {
+		int ack_len = quic_ack_create(conn, conn->crypto_level, skb);
+		if (ack_len > 0)
+			payload_len += ack_len;
+	}
+
+	/* Add crypto frames */
+	while (!skb_queue_empty(&conn->crypto_buffer[conn->crypto_level]) &&
+	       payload_len < max_payload) {
+		frame_skb = skb_dequeue(&conn->crypto_buffer[conn->crypto_level]);
+		if (!frame_skb)
+			break;
+
+		if (payload_len + frame_skb->len > max_payload) {
+			skb_queue_head(&conn->crypto_buffer[conn->crypto_level], frame_skb);
+			break;
+		}
+
+		p = skb_put(skb, frame_skb->len);
+		skb_copy_bits(frame_skb, 0, p, frame_skb->len);
+		payload_len += frame_skb->len;
+		kfree_skb(frame_skb);
+	}
+
+	/* Add pending frames */
+	while (!skb_queue_empty(&conn->pending_frames) &&
+	       payload_len < max_payload) {
+		frame_skb = skb_dequeue(&conn->pending_frames);
+		if (!frame_skb)
+			break;
+
+		if (payload_len + frame_skb->len > max_payload) {
+			skb_queue_head(&conn->pending_frames, frame_skb);
+			break;
+		}
+
+		p = skb_put(skb, frame_skb->len);
+		skb_copy_bits(frame_skb, 0, p, frame_skb->len);
+		payload_len += frame_skb->len;
+		kfree_skb(frame_skb);
+	}
+
+	/* Add PADDING if needed (Initial packets must be >= 1200 bytes) */
+	if (conn->crypto_level == QUIC_CRYPTO_INITIAL) {
+		int pad_len = QUIC_MIN_PACKET_SIZE - skb->len - 16;
+		if (pad_len > 0) {
+			p = skb_put(skb, pad_len);
+			memset(p, 0, pad_len);  /* PADDING frames are 0x00 */
+			payload_len += pad_len;
+		}
+	}
+
+	/* Update length field for long headers */
+	if (conn->crypto_level == QUIC_CRYPTO_INITIAL ||
+	    conn->crypto_level == QUIC_CRYPTO_HANDSHAKE) {
+		u64 length = pn_len + payload_len + 16;  /* PN + payload + tag */
+		int len_offset = pn_offset - 2;
+
+		skb->data[len_offset] = 0x40 | ((length >> 8) & 0x3f);
+		skb->data[len_offset + 1] = length & 0xff;
+	}
+
+	/* Encrypt packet */
+	if (quic_crypto_encrypt(&conn->crypto[conn->crypto_level], skb, pn) < 0) {
+		kfree_skb(skb);
+		return NULL;
+	}
+
+	/* Apply header protection */
+	if (quic_crypto_protect_header(&conn->crypto[conn->crypto_level],
+				       skb, pn_offset, pn_len) < 0) {
+		kfree_skb(skb);
+		return NULL;
+	}
+
+	/* Track sent packet for loss detection */
+	{
+		struct quic_sent_packet *sent;
+
+		sent = kzalloc(sizeof(*sent), GFP_ATOMIC);
+		if (sent) {
+			sent->pn = pn;
+			sent->sent_time = ktime_get();
+			sent->size = skb->len;
+			sent->ack_eliciting = payload_len > 0;
+			sent->in_flight = 1;
+			sent->pn_space = conn->crypto_level;
+			INIT_LIST_HEAD(&sent->list);
+
+			quic_loss_detection_on_packet_sent(conn, sent);
+		}
+	}
+
+	/* Update statistics */
+	conn->stats.packets_sent++;
+	conn->stats.bytes_sent += skb->len;
 
 	return skb;
 }
-EXPORT_SYMBOL_GPL(quic_coalesce_packets);
 
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("QUIC Packet Handling");
-MODULE_AUTHOR("Linux QUIC Authors");
+void quic_packet_process(struct quic_connection *conn, struct sk_buff *skb)
+{
+	struct quic_crypto_ctx *ctx;
+	u8 first_byte;
+	u8 pn_offset, pn_len;
+	u64 truncated_pn, pn;
+	u8 level;
+	int err;
+
+	if (skb->len < 1) {
+		kfree_skb(skb);
+		return;
+	}
+
+	first_byte = skb->data[0];
+
+	/* Determine encryption level */
+	if (first_byte & QUIC_HEADER_FORM_LONG) {
+		u8 packet_type = (first_byte & 0x30) >> 4;
+
+		switch (packet_type) {
+		case QUIC_LONG_TYPE_INITIAL:
+			level = QUIC_CRYPTO_INITIAL;
+			break;
+		case QUIC_LONG_TYPE_0RTT:
+			level = QUIC_CRYPTO_EARLY_DATA;
+			break;
+		case QUIC_LONG_TYPE_HANDSHAKE:
+			level = QUIC_CRYPTO_HANDSHAKE;
+			break;
+		case QUIC_LONG_TYPE_RETRY:
+			/* Handle retry packet specially */
+			quic_packet_process_retry(conn, skb);
+			return;
+		default:
+			kfree_skb(skb);
+			return;
+		}
+	} else {
+		level = QUIC_CRYPTO_APPLICATION;
+	}
+
+	ctx = &conn->crypto[level];
+	if (!ctx->keys_available) {
+		/* Buffer packet for later processing */
+		skb_queue_tail(&conn->pending_frames, skb);
+		return;
+	}
+
+	/* Remove header protection */
+	err = quic_crypto_unprotect_header(ctx, skb, &pn_offset, &pn_len);
+	if (err) {
+		kfree_skb(skb);
+		return;
+	}
+
+	/* Decode packet number */
+	truncated_pn = quic_extract_pn(skb->data + pn_offset, pn_len);
+	pn = quic_decode_pn(conn->pn_spaces[level].largest_recv_pn,
+			    truncated_pn, pn_len);
+
+	QUIC_SKB_CB(skb)->pn = pn;
+	QUIC_SKB_CB(skb)->pn_len = pn_len;
+	QUIC_SKB_CB(skb)->header_len = pn_offset + pn_len;
+
+	/* Decrypt packet */
+	err = quic_crypto_decrypt(ctx, skb, pn);
+	if (err) {
+		kfree_skb(skb);
+		return;
+	}
+
+	/* Update largest received packet number */
+	if (pn > conn->pn_spaces[level].largest_recv_pn)
+		conn->pn_spaces[level].largest_recv_pn = pn;
+
+	/* Record ACK for this packet */
+	quic_ack_on_packet_received(conn, pn, level);
+
+	/* Process frames */
+	quic_frame_process_all(conn, skb, level);
+
+	/* Update statistics */
+	conn->stats.packets_received++;
+	conn->stats.bytes_received += skb->len;
+
+	kfree_skb(skb);
+}
+
+static void quic_packet_process_retry(struct quic_connection *conn,
+				      struct sk_buff *skb)
+{
+	u8 *data = skb->data;
+	int offset = 5;  /* Skip first byte and version */
+	u8 dcid_len, scid_len;
+	struct quic_connection_id new_scid;
+
+	if (conn->state != QUIC_STATE_CONNECTING) {
+		kfree_skb(skb);
+		return;
+	}
+
+	/* Parse DCID */
+	dcid_len = data[offset++];
+	offset += dcid_len;
+
+	/* Parse SCID - this becomes our new DCID */
+	scid_len = data[offset++];
+	if (scid_len > QUIC_MAX_CONNECTION_ID_LEN) {
+		kfree_skb(skb);
+		return;
+	}
+
+	new_scid.len = scid_len;
+	memcpy(new_scid.data, data + offset, scid_len);
+	offset += scid_len;
+
+	/* The rest is the retry token (minus 16-byte integrity tag) */
+	if (skb->len - offset < 16) {
+		kfree_skb(skb);
+		return;
+	}
+
+	/* Store token for retry */
+	{
+		u32 token_len = skb->len - offset - 16;
+		u8 *token = data + offset;
+
+		kfree(conn->qsk->token);
+		conn->qsk->token = kmemdup(token, token_len, GFP_ATOMIC);
+		conn->qsk->token_len = token_len;
+	}
+
+	/* Update DCID for next Initial packet */
+	memcpy(&conn->original_dcid, &conn->dcid, sizeof(conn->dcid));
+	memcpy(&conn->dcid, &new_scid, sizeof(conn->dcid));
+
+	/* Re-derive initial secrets with new DCID */
+	quic_crypto_destroy(&conn->crypto[QUIC_CRYPTO_INITIAL]);
+	quic_crypto_derive_initial_secrets(conn, &conn->dcid);
+
+	/* Resend Initial packet */
+	schedule_work(&conn->tx_work);
+
+	kfree_skb(skb);
+}
+
+int quic_frame_process_all(struct quic_connection *conn, struct sk_buff *skb,
+			   u8 level)
+{
+	u8 *data = skb->data + QUIC_SKB_CB(skb)->header_len;
+	int len = skb->len - QUIC_SKB_CB(skb)->header_len;
+	int offset = 0;
+
+	while (offset < len) {
+		u8 frame_type = data[offset];
+		int frame_len;
+
+		frame_len = quic_frame_process_one(conn, data + offset,
+						   len - offset, level);
+		if (frame_len < 0)
+			return frame_len;
+
+		offset += frame_len;
+	}
+
+	return 0;
+}
+
+int quic_frame_process_one(struct quic_connection *conn, const u8 *data,
+			   int len, u8 level)
+{
+	u8 frame_type;
+	int offset = 0;
+	u64 val1, val2, val3;
+	int varint_len;
+
+	if (len < 1)
+		return -EINVAL;
+
+	frame_type = data[offset++];
+
+	switch (frame_type) {
+	case QUIC_FRAME_PADDING:
+		/* Skip all padding bytes */
+		while (offset < len && data[offset] == 0)
+			offset++;
+		return offset;
+
+	case QUIC_FRAME_PING:
+		/* PING frame is just the type byte */
+		return 1;
+
+	case QUIC_FRAME_ACK:
+	case QUIC_FRAME_ACK_ECN:
+		return quic_frame_process_ack(conn, data, len, level);
+
+	case QUIC_FRAME_RESET_STREAM:
+		/* Stream ID */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		/* Application Protocol Error Code */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val2);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		/* Final Size */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val3);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		{
+			struct quic_stream *stream = quic_stream_lookup(conn, val1);
+			if (stream) {
+				quic_stream_handle_reset(stream, val2, val3);
+				refcount_dec(&stream->refcnt);
+			}
+		}
+		return offset;
+
+	case QUIC_FRAME_STOP_SENDING:
+		/* Stream ID */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		/* Application Protocol Error Code */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val2);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		{
+			struct quic_stream *stream = quic_stream_lookup(conn, val1);
+			if (stream) {
+				quic_stream_handle_stop_sending(stream, val2);
+				refcount_dec(&stream->refcnt);
+			}
+		}
+		return offset;
+
+	case QUIC_FRAME_CRYPTO:
+		return quic_frame_process_crypto(conn, data, len, level);
+
+	case QUIC_FRAME_NEW_TOKEN:
+		/* Length */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		if (offset + val1 > len)
+			return -EINVAL;
+
+		/* Store token */
+		kfree(conn->qsk->token);
+		conn->qsk->token = kmemdup(data + offset, val1, GFP_ATOMIC);
+		conn->qsk->token_len = val1;
+		offset += val1;
+		return offset;
+
+	case QUIC_FRAME_STREAM ... (QUIC_FRAME_STREAM | 0x07):
+		return quic_frame_process_stream(conn, data, len);
+
+	case QUIC_FRAME_MAX_DATA:
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		if (val1 > conn->remote_fc.max_data)
+			conn->remote_fc.max_data = val1;
+		return offset;
+
+	case QUIC_FRAME_MAX_STREAM_DATA:
+		/* Stream ID */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		/* Maximum Stream Data */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val2);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		{
+			struct quic_stream *stream = quic_stream_lookup(conn, val1);
+			if (stream) {
+				if (val2 > stream->send.max_stream_data)
+					stream->send.max_stream_data = val2;
+				refcount_dec(&stream->refcnt);
+			}
+		}
+		return offset;
+
+	case QUIC_FRAME_MAX_STREAMS_BIDI:
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		if (val1 > conn->max_stream_id_bidi)
+			conn->max_stream_id_bidi = val1;
+		return offset;
+
+	case QUIC_FRAME_MAX_STREAMS_UNI:
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		if (val1 > conn->max_stream_id_uni)
+			conn->max_stream_id_uni = val1;
+		return offset;
+
+	case QUIC_FRAME_DATA_BLOCKED:
+	case QUIC_FRAME_STREAM_DATA_BLOCKED:
+	case QUIC_FRAME_STREAMS_BLOCKED_BIDI:
+	case QUIC_FRAME_STREAMS_BLOCKED_UNI:
+		/* These are informational, just parse and skip */
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		if (frame_type == QUIC_FRAME_STREAM_DATA_BLOCKED) {
+			varint_len = quic_varint_decode(data + offset, len - offset, &val2);
+			if (varint_len < 0) return varint_len;
+			offset += varint_len;
+		}
+		return offset;
+
+	case QUIC_FRAME_NEW_CONNECTION_ID:
+		return quic_frame_process_new_cid(conn, data, len);
+
+	case QUIC_FRAME_RETIRE_CONNECTION_ID:
+		varint_len = quic_varint_decode(data + offset, len - offset, &val1);
+		if (varint_len < 0) return varint_len;
+		offset += varint_len;
+
+		quic_conn_retire_cid(conn, val1);
+		return offset;
+
+	case QUIC_FRAME_PATH_CHALLENGE:
+		if (len < offset + 8)
+			return -EINVAL;
+		/* Echo back as PATH_RESPONSE */
+		{
+			struct sk_buff *resp = alloc_skb(16, GFP_ATOMIC);
+			u8 *p;
+
+			if (resp) {
+				p = skb_put(resp, 9);
+				p[0] = QUIC_FRAME_PATH_RESPONSE;
+				memcpy(p + 1, data + offset, 8);
+				skb_queue_tail(&conn->pending_frames, resp);
+			}
+		}
+		return offset + 8;
+
+	case QUIC_FRAME_PATH_RESPONSE:
+		if (len < offset + 8)
+			return -EINVAL;
+		/* Validate path challenge response */
+		if (conn->active_path && conn->active_path->challenge_pending) {
+			if (memcmp(data + offset, conn->active_path->challenge_data, 8) == 0) {
+				conn->active_path->validated = 1;
+				conn->active_path->challenge_pending = 0;
+			}
+		}
+		return offset + 8;
+
+	case QUIC_FRAME_CONNECTION_CLOSE:
+	case QUIC_FRAME_CONNECTION_CLOSE_APP:
+		return quic_frame_process_connection_close(conn, data, len);
+
+	case QUIC_FRAME_HANDSHAKE_DONE:
+		if (!conn->is_server) {
+			conn->handshake_confirmed = 1;
+			quic_conn_set_state(conn, QUIC_STATE_CONNECTED);
+		}
+		return 1;
+
+	default:
+		/* Unknown frame type */
+		return -EPROTO;
+	}
+}
+
+static int quic_frame_process_crypto(struct quic_connection *conn,
+				     const u8 *data, int len, u8 level)
+{
+	int offset = 1;  /* Skip frame type */
+	u64 crypto_offset;
+	u64 crypto_len;
+	int varint_len;
+
+	/* Offset */
+	varint_len = quic_varint_decode(data + offset, len - offset, &crypto_offset);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* Length */
+	varint_len = quic_varint_decode(data + offset, len - offset, &crypto_len);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	if (offset + crypto_len > len)
+		return -EINVAL;
+
+	/* Pass crypto data to TLS layer (via userspace or kernel TLS) */
+	{
+		struct sk_buff *crypto_skb = alloc_skb(crypto_len + 16, GFP_ATOMIC);
+		if (crypto_skb) {
+			u8 *p = skb_put(crypto_skb, crypto_len);
+			memcpy(p, data + offset, crypto_len);
+			skb_queue_tail(&conn->crypto_buffer[level], crypto_skb);
+		}
+	}
+
+	offset += crypto_len;
+	return offset;
+}
+
+static int quic_frame_process_stream(struct quic_connection *conn,
+				     const u8 *data, int len)
+{
+	u8 frame_type = data[0];
+	int offset = 1;
+	u64 stream_id;
+	u64 stream_offset = 0;
+	u64 stream_len;
+	bool has_offset = (frame_type & 0x04) != 0;
+	bool has_length = (frame_type & 0x02) != 0;
+	bool has_fin = (frame_type & 0x01) != 0;
+	int varint_len;
+	struct quic_stream *stream;
+
+	/* Stream ID */
+	varint_len = quic_varint_decode(data + offset, len - offset, &stream_id);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* Offset (optional) */
+	if (has_offset) {
+		varint_len = quic_varint_decode(data + offset, len - offset, &stream_offset);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+	}
+
+	/* Length (optional) */
+	if (has_length) {
+		varint_len = quic_varint_decode(data + offset, len - offset, &stream_len);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+	} else {
+		stream_len = len - offset;
+	}
+
+	if (offset + stream_len > len)
+		return -EINVAL;
+
+	/* Find or create stream */
+	stream = quic_stream_lookup(conn, stream_id);
+	if (!stream) {
+		stream = quic_stream_create(conn, stream_id);
+		if (!stream)
+			return -ENOMEM;
+	}
+
+	/* Deliver data to stream */
+	quic_stream_recv_data(stream, stream_offset, data + offset, stream_len, has_fin);
+
+	refcount_dec(&stream->refcnt);
+
+	return offset + stream_len;
+}
+
+static int quic_frame_process_ack(struct quic_connection *conn,
+				  const u8 *data, int len, u8 level)
+{
+	struct quic_ack_info ack;
+	int offset = 1;  /* Skip frame type */
+	u64 ack_range_count;
+	int varint_len;
+	int i;
+
+	memset(&ack, 0, sizeof(ack));
+
+	/* Largest Acknowledged */
+	varint_len = quic_varint_decode(data + offset, len - offset, &ack.largest_acked);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* ACK Delay */
+	varint_len = quic_varint_decode(data + offset, len - offset, &ack.ack_delay);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* ACK Range Count */
+	varint_len = quic_varint_decode(data + offset, len - offset, &ack_range_count);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* First ACK Range */
+	varint_len = quic_varint_decode(data + offset, len - offset, &ack.ranges[0].ack_range);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	ack.ack_range_count = 1;
+
+	/* Additional ACK Ranges */
+	for (i = 0; i < ack_range_count && i < 255; i++) {
+		varint_len = quic_varint_decode(data + offset, len - offset,
+						&ack.ranges[i + 1].gap);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+
+		varint_len = quic_varint_decode(data + offset, len - offset,
+						&ack.ranges[i + 1].ack_range);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+
+		ack.ack_range_count++;
+	}
+
+	/* ECN counts (if ACK_ECN frame) */
+	if (data[0] == QUIC_FRAME_ACK_ECN) {
+		varint_len = quic_varint_decode(data + offset, len - offset, &ack.ecn_ect0);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+
+		varint_len = quic_varint_decode(data + offset, len - offset, &ack.ecn_ect1);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+
+		varint_len = quic_varint_decode(data + offset, len - offset, &ack.ecn_ce);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+	}
+
+	/* Process ACK */
+	quic_loss_detection_on_ack_received(conn, &ack, level);
+
+	return offset;
+}
+
+static int quic_frame_process_new_cid(struct quic_connection *conn,
+				      const u8 *data, int len)
+{
+	int offset = 1;
+	u64 seq, retire_prior_to;
+	u8 cid_len;
+	struct quic_connection_id cid;
+	u8 reset_token[16];
+	int varint_len;
+
+	/* Sequence Number */
+	varint_len = quic_varint_decode(data + offset, len - offset, &seq);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* Retire Prior To */
+	varint_len = quic_varint_decode(data + offset, len - offset, &retire_prior_to);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* Length */
+	if (offset >= len)
+		return -EINVAL;
+	cid_len = data[offset++];
+	if (cid_len > QUIC_MAX_CONNECTION_ID_LEN)
+		return -EINVAL;
+
+	/* Connection ID */
+	if (offset + cid_len > len)
+		return -EINVAL;
+	cid.len = cid_len;
+	memcpy(cid.data, data + offset, cid_len);
+	offset += cid_len;
+
+	/* Stateless Reset Token */
+	if (offset + 16 > len)
+		return -EINVAL;
+	memcpy(reset_token, data + offset, 16);
+	offset += 16;
+
+	quic_conn_add_peer_cid(conn, &cid, seq, retire_prior_to, reset_token);
+
+	return offset;
+}
+
+static int quic_frame_process_connection_close(struct quic_connection *conn,
+					       const u8 *data, int len)
+{
+	int offset = 1;
+	u64 error_code;
+	u64 frame_type = 0;
+	u64 reason_len;
+	int varint_len;
+	bool is_app_error = (data[0] == QUIC_FRAME_CONNECTION_CLOSE_APP);
+
+	/* Error Code */
+	varint_len = quic_varint_decode(data + offset, len - offset, &error_code);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	/* Frame Type (not present in APPLICATION_CLOSE) */
+	if (!is_app_error) {
+		varint_len = quic_varint_decode(data + offset, len - offset, &frame_type);
+		if (varint_len < 0)
+			return varint_len;
+		offset += varint_len;
+	}
+
+	/* Reason Phrase Length */
+	varint_len = quic_varint_decode(data + offset, len - offset, &reason_len);
+	if (varint_len < 0)
+		return varint_len;
+	offset += varint_len;
+
+	if (offset + reason_len > len)
+		return -EINVAL;
+
+	/* Store close info */
+	conn->error_code = error_code;
+	conn->frame_type = frame_type;
+	conn->app_error = is_app_error ? 1 : 0;
+	conn->close_received = 1;
+
+	if (reason_len > 0) {
+		kfree(conn->reason_phrase);
+		conn->reason_phrase = kmemdup(data + offset, reason_len, GFP_ATOMIC);
+		conn->reason_len = reason_len;
+	}
+
+	offset += reason_len;
+
+	/* Enter draining state */
+	quic_conn_set_state(conn, QUIC_STATE_DRAINING);
+
+	return offset;
+}
