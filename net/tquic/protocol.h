@@ -451,4 +451,94 @@ void tquic_migration_path_event(struct tquic_connection *conn,
 #define TQUIC_PATH_EVENT_MIGRATE_FAILED	2
 #define TQUIC_PATH_EVENT_MIGRATE_STANDBY	3
 
+/*
+ * =============================================================================
+ * STREAM SOCKET MANAGEMENT
+ * =============================================================================
+ *
+ * Stream sockets are created via ioctl(TQUIC_NEW_STREAM) on the connection
+ * socket. Each stream is a first-class file descriptor that can be used with
+ * poll/epoll/select.
+ *
+ * Stream ID encoding (RFC 9000 Section 2.1):
+ *   - Bits 0-1 encode type: 0=client-initiated bidi, 1=server-initiated bidi,
+ *                           2=client-initiated uni, 3=server-initiated uni
+ *   - Client-initiated: even numbers (bidi: 0,4,8..., uni: 2,6,10...)
+ *   - Server-initiated: odd numbers (bidi: 1,5,9..., uni: 3,7,11...)
+ *
+ * Locking:
+ *   Stream operations acquire conn->lock when modifying stream lists.
+ *   Per-stream state is protected by the stream's own spinlock when present.
+ *   Buffer queues (sk_buff_head) have internal locking for queue ops.
+ */
+
+/**
+ * struct tquic_stream_sock - Stream socket state
+ * @stream: Associated QUIC stream
+ * @conn: Parent connection
+ * @parent_sk: Connection socket
+ * @wait: Wait queue for blocking operations
+ *
+ * Stored in socket->sk_user_data to link stream fd to tquic_stream.
+ */
+struct tquic_stream_sock {
+	struct tquic_stream *stream;
+	struct tquic_connection *conn;
+	struct sock *parent_sk;
+	wait_queue_head_t wait;
+};
+
+/*
+ * Stream management functions (tquic_stream.c)
+ */
+
+/**
+ * tquic_stream_socket_create - Create a new stream socket
+ * @conn: Parent connection
+ * @parent_sk: Connection socket (for network namespace, etc.)
+ * @flags: Stream type flags (TQUIC_STREAM_BIDI or TQUIC_STREAM_UNIDI)
+ * @stream_id: OUT - Assigned stream ID
+ *
+ * Creates a new stream on the connection and returns a file descriptor
+ * for the stream socket. The stream fd is first-class and supports
+ * poll/epoll/select.
+ *
+ * Returns: File descriptor on success, negative errno on failure
+ *   -ENOTCONN: Connection not established
+ *   -EAGAIN: Would block and O_NONBLOCK set (stream limit)
+ *   -EINTR: Interrupted while waiting for stream credit
+ *   -EINVAL: Invalid flags
+ *   -ENOMEM: Memory allocation failed
+ */
+int tquic_stream_socket_create(struct tquic_connection *conn,
+			       struct sock *parent_sk,
+			       u32 flags, u64 *stream_id);
+
+/**
+ * tquic_stream_wake - Wake up waiters on stream socket
+ * @stream: Stream with incoming data or state change
+ *
+ * Called from packet input path when data arrives on a stream
+ * or stream state changes. Wakes up processes blocked in
+ * recvmsg() or poll() on the stream socket.
+ */
+void tquic_stream_wake(struct tquic_stream *stream);
+
+/**
+ * tquic_wait_for_stream_credit - Wait until stream can be opened
+ * @conn: Connection
+ * @is_bidi: True for bidirectional, false for unidirectional
+ * @nonblock: True if O_NONBLOCK set on socket
+ *
+ * Per CONTEXT.md: ioctl blocks until peer grants more streams via
+ * MAX_STREAMS frame. If stream credit is available, returns immediately.
+ *
+ * Returns: 0 when stream can be opened, negative errno on failure
+ *   -EAGAIN: Would block and nonblock=true
+ *   -EINTR: Interrupted by signal
+ *   -ENOTCONN: Connection closed while waiting
+ */
+int tquic_wait_for_stream_credit(struct tquic_connection *conn,
+				 bool is_bidi, bool nonblock);
+
 #endif /* _NET_TQUIC_PROTOCOL_H */
