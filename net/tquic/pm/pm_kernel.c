@@ -161,6 +161,45 @@ static void tquic_pm_kernel_mark_unavailable(struct tquic_connection *conn,
 }
 
 /**
+ * tquic_pm_kernel_try_recover - Try to recover unavailable paths
+ * @conn: Connection
+ * @dev: Network device that came back up
+ *
+ * Revalidates paths that were marked UNAVAILABLE when this interface went down.
+ */
+static void tquic_pm_kernel_try_recover(struct tquic_connection *conn,
+					 struct net_device *dev)
+{
+	struct tquic_path *path;
+	int recovered = 0;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(path, &conn->paths, list) {
+		if (path->dev != dev)
+			continue;
+
+		if (path->state == TQUIC_PATH_UNAVAILABLE) {
+			/* Interface back up - revalidate path */
+			pr_debug("tquic: path %u recovering (interface %s up)\n",
+				 path->path_id, dev->name);
+
+			/* Start revalidation */
+			path->state = TQUIC_PATH_PENDING;
+			path->validation.retries = 0;
+			tquic_path_start_validation(conn, path);
+
+			recovered++;
+		}
+	}
+	rcu_read_unlock();
+
+	if (recovered > 0) {
+		pr_info("tquic: %d paths recovering on interface %s\n",
+			recovered, dev->name);
+	}
+}
+
+/**
  * tquic_pm_kernel_try_add_path - Attempt to add path for an interface
  * @conn: Connection
  * @dev: Network device
@@ -256,20 +295,32 @@ static int tquic_pm_kernel_netdev_event(struct notifier_block *nb,
 
 	switch (event) {
 	case NETDEV_UP:
-		/* Interface came up - try to add paths */
-		if (tquic_pm_kernel_should_add_path(dev, pernet)) {
+		/* Interface came up - first try to recover, then discover new */
+		{
 			struct tquic_connection *conn, *tmp;
 
-			/* Iterate existing connections in this namespace */
 			spin_lock_bh(&kdata->conn_lock);
 			list_for_each_entry_safe(conn, tmp, &kdata->conn_list, node) {
 				/* Skip if connection not established yet */
 				if (conn->state != TQUIC_CONN_CONNECTED)
 					continue;
 
-				tquic_pm_kernel_try_add_path(conn, dev, pernet);
+				/* First: try to recover unavailable paths */
+				tquic_pm_kernel_try_recover(conn, dev);
 			}
 			spin_unlock_bh(&kdata->conn_lock);
+
+			/* Then: discover new paths through this interface */
+			if (tquic_pm_kernel_should_add_path(dev, pernet)) {
+				spin_lock_bh(&kdata->conn_lock);
+				list_for_each_entry_safe(conn, tmp, &kdata->conn_list, node) {
+					if (conn->state != TQUIC_CONN_CONNECTED)
+						continue;
+
+					tquic_pm_kernel_try_add_path(conn, dev, pernet);
+				}
+				spin_unlock_bh(&kdata->conn_lock);
+			}
 		}
 		break;
 
@@ -287,29 +338,28 @@ static int tquic_pm_kernel_netdev_event(struct notifier_block *nb,
 		break;
 
 	case NETDEV_CHANGE:
-		/* Carrier state changed - update path state */
+		/* Carrier state changed - handle same as up/down */
 		if (netif_carrier_ok(dev)) {
-			/* Carrier back - try to recover paths */
-			if (tquic_pm_kernel_should_add_path(dev, pernet)) {
-				struct tquic_connection *conn, *tmp;
+			/* Carrier up - same as NETDEV_UP for recovery */
+			struct tquic_connection *conn, *tmp;
 
-				spin_lock_bh(&kdata->conn_lock);
-				list_for_each_entry_safe(conn, tmp, &kdata->conn_list, node) {
-					/* Re-validate existing failed paths */
-					struct tquic_path *path;
+			spin_lock_bh(&kdata->conn_lock);
+			list_for_each_entry_safe(conn, tmp, &kdata->conn_list, node) {
+				if (conn->state != TQUIC_CONN_CONNECTED)
+					continue;
 
-					spin_lock(&conn->lock);
-					list_for_each_entry(path, &conn->paths, list) {
-						if (path->state == TQUIC_PATH_FAILED) {
-							path->state = TQUIC_PATH_PENDING;
-							pr_debug("TQUIC PM kernel: Path %u recovery pending (dev %s carrier ok)\n",
-								 path->path_id, dev->name);
-						}
-					}
-					spin_unlock(&conn->lock);
-				}
-				spin_unlock_bh(&kdata->conn_lock);
+				tquic_pm_kernel_try_recover(conn, dev);
 			}
+			spin_unlock_bh(&kdata->conn_lock);
+		} else {
+			/* Carrier down - same as NETDEV_DOWN */
+			struct tquic_connection *conn, *tmp;
+
+			spin_lock_bh(&kdata->conn_lock);
+			list_for_each_entry_safe(conn, tmp, &kdata->conn_list, node) {
+				tquic_pm_kernel_mark_unavailable(conn, dev);
+			}
+			spin_unlock_bh(&kdata->conn_lock);
 		}
 		break;
 	}

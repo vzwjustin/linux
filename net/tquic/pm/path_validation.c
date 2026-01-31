@@ -293,8 +293,18 @@ int tquic_path_handle_response(struct tquic_connection *conn,
 	/* Update RTT statistics using RFC 6298 algorithm */
 	tquic_pm_update_rtt(path, rtt_us);
 
-	/* Mark path as validated/active */
-	path->state = TQUIC_PATH_ACTIVE;
+	/* Mark path as validated/active
+	 * If recovering from UNAVAILABLE, restore saved state */
+	if (path->saved_state != TQUIC_PATH_UNUSED &&
+	    path->saved_state != TQUIC_PATH_UNAVAILABLE) {
+		path->state = path->saved_state;
+		path->saved_state = TQUIC_PATH_UNUSED;
+		pr_info("tquic_pm: path %u recovered to state %d\n",
+			path->path_id, path->state);
+	} else {
+		path->state = TQUIC_PATH_ACTIVE;
+	}
+
 	path->validation.challenge_pending = false;
 	path->validation.retries = 0;
 
@@ -306,6 +316,9 @@ int tquic_path_handle_response(struct tquic_connection *conn,
 
 	/* Emit validation success event */
 	tquic_nl_path_event(conn, path, TQUIC_PM_EVENT_VALIDATED);
+
+	/* Notify bonding layer path is available again */
+	tquic_bond_path_recovered(conn, path);
 
 	return 0;
 }
