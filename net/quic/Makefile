@@ -22,4 +22,6 @@ quic-y := \
 	tquic_bonding.o \
 	tquic_reorder.o \
 	tquic_failover.o \
-	sched_minrtt.o
+	sched_minrtt.o \
+	sched_aggregate.o \
+	sched_weighted.o
