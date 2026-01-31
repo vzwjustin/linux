@@ -29,6 +29,7 @@
 #include <net/tquic.h>
 
 #include "tquic_bonding.h"
+#include "tquic_failover.h"
 
 /*
  * State name strings for debugging/logging
@@ -312,6 +313,13 @@ struct tquic_bonding_ctx *tquic_bonding_init(struct tquic_path_manager *pm,
 	bc->reorder = NULL;
 	bc->max_buffer_bytes = TQUIC_DEFAULT_BUFFER_SIZE;
 
+	/* Initialize failover context */
+	bc->failover = tquic_failover_init(bc, tquic_bond_wq, gfp);
+	if (!bc->failover) {
+		pr_warn("failover context allocation failed, degraded operation\n");
+		/* Continue without failover - degraded operation */
+	}
+
 	/* Initialize weight work */
 	INIT_WORK(&bc->weight_work, tquic_bonding_weight_work_fn);
 	bc->weight_update_pending = false;
@@ -340,6 +348,12 @@ void tquic_bonding_destroy(struct tquic_bonding_ctx *bc)
 
 	/* Cancel pending work */
 	cancel_work_sync(&bc->weight_work);
+
+	/* Free failover context */
+	if (bc->failover) {
+		tquic_failover_destroy(bc->failover);
+		bc->failover = NULL;
+	}
 
 	/* Free reorder buffer */
 	tquic_bonding_free_reorder(bc);
@@ -673,13 +687,27 @@ EXPORT_SYMBOL_GPL(tquic_bonding_on_path_validated);
 
 /**
  * tquic_bonding_on_path_failed - Callback when path fails
+ *
+ * This is the critical failover entry point. When a path fails:
+ * 1. Update path counts for state machine
+ * 2. Trigger failover to requeue unacked packets from failed path
+ * 3. Update bonding state (may transition to DEGRADED or SINGLE_PATH)
  */
 void tquic_bonding_on_path_failed(void *ctx, struct tquic_path *path)
 {
 	struct tquic_bonding_ctx *bc = ctx;
+	u8 path_id;
+	int requeued = 0;
 
 	if (!bc)
 		return;
+
+	/*
+	 * Get path_id from path structure.
+	 * The tquic_path struct has path_id as first field after list linkage.
+	 * We access it through the scheduler's tquic_path definition.
+	 */
+	path_id = ((struct { u8 path_id; } *)path)->path_id;
 
 	spin_lock_bh(&bc->state_lock);
 
@@ -691,8 +719,19 @@ void tquic_bonding_on_path_failed(void *ctx, struct tquic_path *path)
 
 	spin_unlock_bh(&bc->state_lock);
 
-	pr_info("path failed: active=%d failed=%d\n",
-		bc->active_path_count, bc->failed_path_count);
+	/*
+	 * Trigger failover: requeue all unacked packets from this path
+	 * to the retransmit queue for transmission on remaining paths.
+	 */
+	if (bc->failover) {
+		requeued = tquic_failover_on_path_failed(bc->failover, path_id);
+		pr_info("path %u failed: active=%d failed=%d requeued=%d\n",
+			path_id, bc->active_path_count, bc->failed_path_count,
+			requeued);
+	} else {
+		pr_info("path failed: active=%d failed=%d (no failover ctx)\n",
+			bc->active_path_count, bc->failed_path_count);
+	}
 
 	/* Update state machine */
 	tquic_bonding_update_state(bc);
@@ -924,6 +963,27 @@ static void __exit tquic_bonding_exit_module(void)
 
 module_init(tquic_bonding_init_module);
 module_exit(tquic_bonding_exit_module);
+
+/*
+ * ============================================================================
+ * Failover Integration API
+ * ============================================================================
+ */
+
+/**
+ * tquic_bonding_has_pending_retx - Check for pending failover retransmissions
+ *
+ * The scheduler should call this before selecting new data.
+ * Retransmit queue has priority over new data to ensure zero packet loss.
+ */
+bool tquic_bonding_has_pending_retx(struct tquic_bonding_ctx *bc)
+{
+	if (!bc || !bc->failover)
+		return false;
+
+	return tquic_failover_has_pending(bc->failover);
+}
+EXPORT_SYMBOL_GPL(tquic_bonding_has_pending_retx);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Linux Foundation");

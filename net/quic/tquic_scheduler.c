@@ -25,6 +25,9 @@
 #include <linux/seq_file.h>
 #include <net/sock.h>
 
+/* Failover integration for retransmit queue priority */
+#include "tquic_failover.h"
+
 /*
  * Maximum number of paths supported per connection
  */
@@ -1948,6 +1951,40 @@ void tquic_path_set_state(struct tquic_connection *conn, u8 path_id,
 	spin_unlock(&conn->lock);
 }
 EXPORT_SYMBOL_GPL(tquic_path_set_state);
+
+/*
+ * Check if failover queue has pending retransmissions
+ *
+ * The failover context is accessed through the connection's scheduler pointer,
+ * which may point to a path manager with a bonding context containing failover.
+ * For now, we provide a direct API via the failover context.
+ */
+
+/**
+ * tquic_sched_has_failover_pending - Check for pending failover retransmissions
+ * @fc: Failover context (from bonding)
+ *
+ * Returns true if there are packets awaiting retransmission.
+ * Scheduler should check this before pulling new data.
+ */
+bool tquic_sched_has_failover_pending(struct tquic_failover_ctx *fc)
+{
+	return tquic_failover_has_pending(fc);
+}
+EXPORT_SYMBOL_GPL(tquic_sched_has_failover_pending);
+
+/**
+ * tquic_sched_get_failover_packet - Get next packet from failover retransmit queue
+ * @fc: Failover context
+ *
+ * Returns the next packet to retransmit, or NULL if queue is empty.
+ * Caller should retransmit this packet before sending new data.
+ */
+struct tquic_sent_packet *tquic_sched_get_failover_packet(struct tquic_failover_ctx *fc)
+{
+	return tquic_failover_get_next(fc);
+}
+EXPORT_SYMBOL_GPL(tquic_sched_get_failover_packet);
 
 /*
  * Select path(s) for sending

@@ -23,6 +23,7 @@
 struct tquic_path;
 struct tquic_path_manager;
 struct tquic_reorder_buffer;  /* Defined in tquic_bonding.c, implemented in 05-02 */
+struct tquic_failover_ctx;    /* Defined in tquic_failover.h, implemented in 05-03 */
 
 /*
  * Maximum number of paths per bonded connection
@@ -124,6 +125,9 @@ struct tquic_bonding_ctx {
 	/* Reorder buffer (allocated lazily in BOND_PENDING state) */
 	struct tquic_reorder_buffer *reorder;
 	size_t max_buffer_bytes;	/* Configurable via sysctl */
+
+	/* Failover context for seamless retransmission */
+	struct tquic_failover_ctx *failover;	/* Allocated with bonding */
 
 	/* Work for async weight updates */
 	struct work_struct weight_work;
@@ -379,5 +383,34 @@ struct tquic_bonding_info {
  */
 void tquic_bonding_get_info(struct tquic_bonding_ctx *bc,
 			    struct tquic_bonding_info *info);
+
+/*
+ * ============================================================================
+ * Failover Integration
+ * ============================================================================
+ */
+
+/**
+ * tquic_bonding_get_failover - Get failover context for sent packet tracking
+ * @bc: Bonding context
+ *
+ * Returns failover context if bonding is active, NULL otherwise.
+ */
+static inline struct tquic_failover_ctx *
+tquic_bonding_get_failover(struct tquic_bonding_ctx *bc)
+{
+	if (!bc)
+		return NULL;
+	return bc->failover;
+}
+
+/**
+ * tquic_bonding_has_pending_retx - Check if there are pending retransmissions
+ * @bc: Bonding context
+ *
+ * Returns true if the failover context has packets awaiting retransmission.
+ * The scheduler should check this before selecting new data to send.
+ */
+bool tquic_bonding_has_pending_retx(struct tquic_bonding_ctx *bc);
 
 #endif /* _NET_TQUIC_BONDING_H */
