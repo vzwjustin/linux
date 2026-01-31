@@ -10,7 +10,10 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sysctl.h>
+#include <linux/sched.h>
+#include <linux/nsproxy.h>
 #include <net/net_namespace.h>
+#include <net/netns/tquic.h>
 #include <net/tquic.h>
 
 /* Global tunables */
@@ -40,7 +43,84 @@ static char tquic_congestion[16] = "cubic";
 /* Debug tunables */
 static int tquic_debug_level;
 
-/* Sysctl handlers */
+/* Forward declarations for scheduler API */
+struct tquic_sched_ops;
+struct tquic_sched_ops *tquic_sched_find(const char *name);
+
+/*
+ * Per-netns scheduler sysctl handler
+ *
+ * Handles reading/writing net.tquic.scheduler which sets the default
+ * scheduler for new connections in this network namespace.
+ *
+ * On read: Returns current default scheduler name
+ * On write: Validates scheduler exists and sets as default
+ */
+static int proc_tquic_scheduler(struct ctl_table *table, int write,
+				void *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct net *net = current->nsproxy->net_ns;
+	char name[NETNS_TQUIC_SCHED_NAME_MAX];
+	struct ctl_table tmp_table;
+	int ret;
+
+	if (!write) {
+		/* Read current default scheduler for this netns */
+		const char *current_name;
+
+		rcu_read_lock();
+		if (net->tquic.default_scheduler)
+			current_name = net->tquic.default_scheduler->name;
+		else
+			current_name = "aggregate";
+		rcu_read_unlock();
+
+		strscpy(name, current_name, sizeof(name));
+
+		/* Use temporary table pointing to our local buffer */
+		memset(&tmp_table, 0, sizeof(tmp_table));
+		tmp_table.procname = table->procname;
+		tmp_table.data = name;
+		tmp_table.maxlen = sizeof(name);
+		tmp_table.mode = table->mode;
+
+		return proc_dostring(&tmp_table, write, buffer, lenp, ppos);
+	}
+
+	/* Write: get new scheduler name from user */
+	strscpy(name, net->tquic.sched_name, sizeof(name));
+
+	memset(&tmp_table, 0, sizeof(tmp_table));
+	tmp_table.procname = table->procname;
+	tmp_table.data = name;
+	tmp_table.maxlen = sizeof(name);
+	tmp_table.mode = table->mode;
+
+	ret = proc_dostring(&tmp_table, write, buffer, lenp, ppos);
+	if (ret)
+		return ret;
+
+	/* Validate scheduler exists */
+	rcu_read_lock();
+	if (!tquic_sched_find(name)) {
+		rcu_read_unlock();
+		pr_warn("tquic: unknown scheduler '%s'\n", name);
+		return -ENOENT;
+	}
+	rcu_read_unlock();
+
+	/* Set per-netns default scheduler */
+	ret = tquic_sched_set_default(net, name);
+	if (ret) {
+		pr_warn("tquic: failed to set scheduler '%s': %d\n", name, ret);
+		return ret;
+	}
+
+	pr_debug("tquic: netns scheduler set to '%s'\n", name);
+	return 0;
+}
+
+/* Legacy global sysctl handler (for compatibility) */
 static int tquic_sysctl_scheduler(struct ctl_table *table, int write,
 				  void *buffer, size_t *lenp, loff_t *ppos)
 {
@@ -50,11 +130,20 @@ static int tquic_sysctl_scheduler(struct ctl_table *table, int write,
 	if (ret || !write)
 		return ret;
 
-	/* Validate and set scheduler */
-	if (tquic_sched_find(tquic_scheduler))
-		tquic_sched_set_default(tquic_scheduler);
-	else
+	/* Validate and set global scheduler (legacy) */
+	rcu_read_lock();
+	if (!tquic_sched_find(tquic_scheduler)) {
+		rcu_read_unlock();
 		pr_warn("tquic: unknown scheduler '%s'\n", tquic_scheduler);
+		return -ENOENT;
+	}
+	rcu_read_unlock();
+
+	/* Also set for init_net as the per-netns default */
+	ret = tquic_sched_set_default(&init_net, tquic_scheduler);
+	if (ret)
+		pr_warn("tquic: failed to set default scheduler '%s'\n",
+			tquic_scheduler);
 
 	return 0;
 }
@@ -221,7 +310,7 @@ static struct ctl_table tquic_sysctl_table[] = {
 		.data		= tquic_scheduler,
 		.maxlen		= sizeof(tquic_scheduler),
 		.mode		= 0644,
-		.proc_handler	= tquic_sysctl_scheduler,
+		.proc_handler	= proc_tquic_scheduler,
 	},
 	{
 		.procname	= "congestion",
