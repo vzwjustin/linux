@@ -19,6 +19,8 @@
 #include <net/protocol.h>
 #include <net/tquic.h>
 
+#include "protocol.h"
+
 /* Socket operations */
 static int tquic_release(struct socket *sock);
 static int tquic_bind(struct socket *sock, struct sockaddr *addr, int addr_len);

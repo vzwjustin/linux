@@ -46,6 +46,8 @@
 
 #include <net/tquic.h>
 
+#include "protocol.h"
+
 /* Network namespace identifier */
 static unsigned int tquic_net_id __read_mostly;
 
