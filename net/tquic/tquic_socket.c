@@ -270,16 +270,64 @@ int tquic_accept(struct sock *sk, struct sock *newsk, int flags, bool kern)
 
 	/* Check accept queue */
 	if (list_empty(&tsk->accept_queue)) {
+		DEFINE_WAIT(wait);
+		int err = 0;
+
 		if (flags & O_NONBLOCK)
 			return -EAGAIN;
-		/* TODO: Wait for incoming connection */
-		return -EAGAIN;
+
+		/* Wait for incoming connection */
+		for (;;) {
+			prepare_to_wait_exclusive(sk_sleep(sk), &wait,
+						  TASK_INTERRUPTIBLE);
+			if (!list_empty(&tsk->accept_queue))
+				break;
+			if (signal_pending(current)) {
+				err = -ERESTARTSYS;
+				break;
+			}
+			if (sk->sk_state != TCP_LISTEN) {
+				err = -EINVAL;
+				break;
+			}
+			release_sock(sk);
+			schedule();
+			lock_sock(sk);
+		}
+		finish_wait(sk_sleep(sk), &wait);
+		if (err)
+			return err;
 	}
 
 	/* Get connection from accept queue */
-	/* TODO: Implement proper accept queue handling */
+	spin_lock_bh(&sk->sk_lock.slock);
+	if (!list_empty(&tsk->accept_queue)) {
+		struct tquic_sock *child_tsk;
 
-	/* For now, create a new connection */
+		child_tsk = list_first_entry(&tsk->accept_queue,
+					     struct tquic_sock, accept_queue);
+		list_del_init(&child_tsk->accept_queue);
+		tsk->accept_queue_len--;
+		spin_unlock_bh(&sk->sk_lock.slock);
+
+		/* Transfer the child connection to the new socket */
+		new_tsk = tquic_sk(newsk);
+		new_tsk->conn = child_tsk->conn;
+		child_tsk->conn = NULL;
+		memcpy(&new_tsk->bind_addr, &child_tsk->bind_addr,
+		       sizeof(struct sockaddr_storage));
+		memcpy(&new_tsk->connect_addr, &child_tsk->connect_addr,
+		       sizeof(struct sockaddr_storage));
+		new_tsk->default_stream = child_tsk->default_stream;
+		child_tsk->default_stream = NULL;
+		inet_sk_set_state(newsk, TCP_ESTABLISHED);
+
+		pr_debug("tquic: accepted connection from queue\n");
+		return 0;
+	}
+	spin_unlock_bh(&sk->sk_lock.slock);
+
+	/* Fallback: create a new connection if queue was empty */
 	new_tsk = tquic_sk(newsk);
 	new_conn = tquic_conn_create(newsk, GFP_KERNEL);
 	if (!new_conn)
@@ -422,7 +470,7 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 
 	switch (optname) {
 	case TQUIC_NODELAY:
-		/* TODO: Implement nodelay */
+		tsk->nodelay = !!val;
 		break;
 
 	case TQUIC_IDLE_TIMEOUT:
@@ -570,7 +618,15 @@ int tquic_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		conn->stats.tx_bytes += chunk;
 	}
 
-	/* TODO: Trigger actual transmission */
+	/*
+	 * Trigger actual transmission.
+	 * If nodelay is set, flush immediately. Otherwise, let the
+	 * output subsystem coalesce data based on congestion state.
+	 */
+	if (tsk->nodelay || stream->send_offset == 0) {
+		/* Flush stream data to the network */
+		tquic_output_flush(conn);
+	}
 
 	return copied;
 }

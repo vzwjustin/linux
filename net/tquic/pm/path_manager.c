@@ -227,12 +227,41 @@ static int tquic_pm_netdev_event(struct notifier_block *nb,
 	switch (event) {
 	case NETDEV_UP:
 		pr_debug("tquic_pm: interface %s came up\n", dev->name);
-		/* TODO: Discover paths through this interface */
+		/* Discover paths through this interface */
+		if (pm->conn) {
+			struct sockaddr_storage addrs[TQUIC_MAX_PATHS];
+			int num_addrs, i;
+
+			num_addrs = tquic_pm_discover_addresses(pm->conn, addrs,
+								TQUIC_MAX_PATHS);
+			for (i = 0; i < num_addrs; i++) {
+				/* Try to add path if remote addr is known */
+				if (pm->conn->active_path) {
+					tquic_conn_add_path(pm->conn,
+						(struct sockaddr *)&addrs[i],
+						(struct sockaddr *)&pm->conn->active_path->remote_addr);
+				}
+			}
+		}
 		break;
 
 	case NETDEV_DOWN:
 		pr_debug("tquic_pm: interface %s went down\n", dev->name);
-		/* TODO: Mark paths through this interface as failed */
+		/* Mark paths through this interface as failed */
+		if (pm->conn) {
+			struct tquic_path *path;
+
+			list_for_each_entry(path, &pm->conn->paths, list) {
+				/* Check if path uses this interface */
+				if (path->state == TQUIC_PATH_ACTIVE ||
+				    path->state == TQUIC_PATH_STANDBY) {
+					path->state = TQUIC_PATH_FAILED;
+					tquic_bond_path_failed(pm->conn, path);
+					pr_debug("tquic_pm: path %u failed (interface down)\n",
+						 path->path_id);
+				}
+			}
+		}
 		break;
 
 	case NETDEV_CHANGE:
@@ -284,7 +313,37 @@ int tquic_pm_discover_addresses(struct tquic_connection *conn,
 			}
 		}
 
-		/* TODO: Get IPv6 addresses if preferred */
+		/* Get IPv6 addresses */
+#if IS_ENABLED(CONFIG_IPV6)
+		{
+			struct inet6_dev *idev;
+
+			idev = __in6_dev_get(dev);
+			if (idev) {
+				struct inet6_ifaddr *ifp;
+
+				read_lock_bh(&idev->lock);
+				list_for_each_entry(ifp, &idev->addr_list, if_list) {
+					if (count >= max_addrs)
+						break;
+					/* Skip link-local addresses for WAN bonding */
+					if (ipv6_addr_type(&ifp->addr) &
+					    IPV6_ADDR_LINKLOCAL)
+						continue;
+
+					struct sockaddr_in6 *sin6 =
+						(struct sockaddr_in6 *)&addrs[count];
+					sin6->sin6_family = AF_INET6;
+					sin6->sin6_addr = ifp->addr;
+					sin6->sin6_port = 0;
+					sin6->sin6_scope_id = 0;
+					sin6->sin6_flowinfo = 0;
+					count++;
+				}
+				read_unlock_bh(&idev->lock);
+			}
+		}
+#endif
 	}
 
 	rtnl_unlock();

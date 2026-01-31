@@ -847,8 +847,8 @@ static struct tquic_stream *tquic_stream_create_internal(
 	stream->priority = ext->priority;
 	init_waitqueue_head(&stream->wait);
 
-	/* Store extended state (use send_offset temporarily as pointer) */
-	/* In a real impl, this would be a proper field */
+	/* Store extended state in stream's ext field */
+	stream->ext = ext;
 
 	return stream;
 }
@@ -1208,8 +1208,8 @@ static int tquic_stream_recv_chunk_insert(struct tquic_stream_manager *mgr,
 	struct tquic_recv_chunk *chunk;
 	struct rb_node **link, *parent = NULL;
 
-	/* Get extended state - in real impl would be proper field */
-	ext = NULL;  /* TODO: proper ext storage */
+	/* Get extended state from stream's ext field */
+	ext = stream->ext;
 
 	/* Allocate chunk */
 	chunk = kmem_cache_zalloc(mgr->chunk_cache, GFP_ATOMIC);
@@ -1225,15 +1225,63 @@ static int tquic_stream_recv_chunk_insert(struct tquic_stream_manager *mgr,
 	if (skb)
 		skb_get(skb);
 
-	/* Insert into RB-tree ordered by offset */
-	/* Using stream->recv_buf ordering via skb->cb as workaround */
+	/*
+	 * Insert into RB-tree ordered by offset for proper reassembly.
+	 * This allows out-of-order data to be stored and delivered in order.
+	 */
+	if (ext) {
+		link = &ext->recv_chunks.rb_node;
 
-	/* For now, use simpler linear approach via recv_buf */
+		while (*link) {
+			struct tquic_recv_chunk *this;
+
+			parent = *link;
+			this = rb_entry(parent, struct tquic_recv_chunk, node);
+
+			if (offset < this->offset) {
+				link = &(*link)->rb_left;
+			} else if (offset > this->offset) {
+				link = &(*link)->rb_right;
+			} else {
+				/* Duplicate offset - discard */
+				kmem_cache_free(mgr->chunk_cache, chunk);
+				if (skb)
+					kfree_skb(skb);
+				return 0;
+			}
+		}
+
+		rb_link_node(&chunk->node, parent, link);
+		rb_insert_color(&chunk->node, &ext->recv_chunks);
+
+		/* Update receive tracking */
+		if (offset > ext->recv_max)
+			ext->recv_max = offset + len;
+
+		/* Deliver in-order chunks to recv_buf */
+		while ((chunk = rb_entry_safe(rb_first(&ext->recv_chunks),
+					      struct tquic_recv_chunk, node))) {
+			if (chunk->offset != ext->recv_next)
+				break;
+
+			rb_erase(&chunk->node, &ext->recv_chunks);
+			if (chunk->skb) {
+				*(u64 *)chunk->skb->cb = chunk->offset;
+				skb_queue_tail(&stream->recv_buf, chunk->skb);
+			}
+			ext->recv_next += chunk->length;
+			ext->rcvbuf_used += chunk->length;
+			kmem_cache_free(mgr->chunk_cache, chunk);
+		}
+
+		return 0;
+	}
+
+	/* Fallback: use simpler linear approach via recv_buf */
 	if (skb) {
 		*(u64 *)skb->cb = offset;
 		skb_queue_tail(&stream->recv_buf, skb);
 	}
-
 	kmem_cache_free(mgr->chunk_cache, chunk);
 
 	return 0;

@@ -104,10 +104,12 @@ struct tquic_connection *tquic_conn_create(struct sock *sk, gfp_t gfp)
 	/* Set default idle timeout */
 	conn->idle_timeout = TQUIC_DEFAULT_IDLE_TIMEOUT;
 
-	/* Initialize timers */
-	timer_setup(&conn->idle_timer, NULL, 0);
-	timer_setup(&conn->ack_timer, NULL, 0);
-	timer_setup(&conn->loss_timer, NULL, 0);
+	/* Initialize timer state (manages idle, ack, loss, and PTO timers) */
+	conn->timer_state = tquic_timer_state_alloc(conn);
+	if (!conn->timer_state) {
+		kmem_cache_free(tquic_conn_cache, conn);
+		return NULL;
+	}
 
 	/* Generate local connection ID */
 	get_random_bytes(conn->scid.id, TQUIC_DEFAULT_CID_LEN);
@@ -139,10 +141,9 @@ void tquic_conn_destroy(struct tquic_connection *conn)
 	/* Remove from global table */
 	rhashtable_remove_fast(&tquic_conn_table, &conn->node, tquic_conn_params);
 
-	/* Cancel timers */
-	del_timer_sync(&conn->idle_timer);
-	del_timer_sync(&conn->ack_timer);
-	del_timer_sync(&conn->loss_timer);
+	/* Free timer state (cancels all timers) */
+	if (conn->timer_state)
+		tquic_timer_state_free(conn->timer_state);
 
 	/* Free all paths */
 	list_for_each_entry_safe(path, tmp_path, &conn->paths, list) {
@@ -186,6 +187,8 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 	if (!path)
 		return -ENOMEM;
 
+	/* Set back-pointer to parent connection */
+	path->conn = conn;
 	path->state = TQUIC_PATH_PENDING;
 	path->path_id = conn->num_paths;
 	path->mtu = 1200;  /* Initial conservative MTU */
