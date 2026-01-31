@@ -39,6 +39,8 @@
 #endif
 #include <net/tquic.h>
 
+#include "protocol.h"
+
 /* UDP tunnel encapsulation type for TQUIC */
 #define UDP_ENCAP_TQUIC		10
 
@@ -62,6 +64,17 @@
 /* Socket hash table */
 static DEFINE_HASHTABLE(tquic_udp_sock_hash, 8);
 static DEFINE_SPINLOCK(tquic_udp_hash_lock);
+
+/*
+ * Listener hash table for demuxing incoming connections
+ * Key: local address + port
+ * Value: tquic_sock in TCP_LISTEN state
+ *
+ * This is separate from the UDP socket hash above, which tracks
+ * per-path UDP sockets. This tracks TQUIC listening sockets.
+ */
+static DEFINE_SPINLOCK(tquic_listener_lock);
+static struct hlist_head tquic_listeners[256];
 
 /**
  * struct tquic_udp_sock - Per-path UDP socket state
@@ -226,6 +239,127 @@ static int tquic_udp_reserve_port(__be16 port)
 
 	return ret;
 }
+
+/*
+ * =============================================================================
+ * TQUIC Listener Registration
+ * =============================================================================
+ *
+ * These functions manage the listener hash table for demuxing incoming
+ * QUIC Initial packets to the correct listening socket.
+ */
+
+/**
+ * tquic_listener_hash - Compute hash for listener lookup
+ * @addr: Local address to hash
+ *
+ * Simple hash based on port and address for listener table indexing.
+ */
+static inline u32 tquic_listener_hash(const struct sockaddr_storage *addr)
+{
+	if (addr->ss_family == AF_INET) {
+		const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+		return (ntohs(sin->sin_port) ^
+			ntohl(sin->sin_addr.s_addr)) & 0xff;
+	} else if (addr->ss_family == AF_INET6) {
+		const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+		u32 hash = jhash(&sin6->sin6_addr, sizeof(sin6->sin6_addr),
+				 ntohs(sin6->sin6_port));
+		return hash & 0xff;
+	}
+	return 0;
+}
+
+/**
+ * tquic_register_listener - Register socket to receive incoming connections
+ * @sk: Socket transitioning to TCP_LISTEN state
+ *
+ * Adds the socket to the listener hash table for packet demuxing.
+ * Called by listen() before transitioning to TCP_LISTEN state.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+int tquic_register_listener(struct sock *sk)
+{
+	struct tquic_sock *tsk = tquic_sk(sk);
+	u32 hash;
+
+	if (tsk->flags & TQUIC_F_LISTENER_REGISTERED)
+		return 0;  /* Already registered */
+
+	hash = tquic_listener_hash(&tsk->bind_addr);
+
+	spin_lock_bh(&tquic_listener_lock);
+	hlist_add_head_rcu(&tsk->listener_node, &tquic_listeners[hash]);
+	tsk->flags |= TQUIC_F_LISTENER_REGISTERED;
+	spin_unlock_bh(&tquic_listener_lock);
+
+	pr_debug("tquic: listener registered, hash=%u\n", hash);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_register_listener);
+
+/**
+ * tquic_unregister_listener - Remove socket from listener table
+ * @sk: Socket to unregister
+ *
+ * Removes the socket from the listener hash table.
+ * Called by release() and when transitioning away from TCP_LISTEN.
+ */
+void tquic_unregister_listener(struct sock *sk)
+{
+	struct tquic_sock *tsk = tquic_sk(sk);
+
+	if (!(tsk->flags & TQUIC_F_LISTENER_REGISTERED))
+		return;
+
+	spin_lock_bh(&tquic_listener_lock);
+	hlist_del_init_rcu(&tsk->listener_node);
+	tsk->flags &= ~TQUIC_F_LISTENER_REGISTERED;
+	spin_unlock_bh(&tquic_listener_lock);
+
+	/* Ensure RCU readers have completed */
+	synchronize_rcu();
+
+	pr_debug("tquic: listener unregistered\n");
+}
+EXPORT_SYMBOL_GPL(tquic_unregister_listener);
+
+/**
+ * tquic_lookup_listener - Find listener for incoming packet
+ * @local_addr: Local address from UDP header
+ *
+ * Searches the listener hash table for a socket listening on the
+ * specified local address.
+ *
+ * Returns: Listener socket or NULL if not found.
+ * Caller must hold RCU read lock.
+ */
+struct sock *tquic_lookup_listener(const struct sockaddr_storage *local_addr)
+{
+	struct tquic_sock *tsk;
+	u32 hash;
+
+	hash = tquic_listener_hash(local_addr);
+
+	hlist_for_each_entry_rcu(tsk, &tquic_listeners[hash], listener_node) {
+		struct sock *sk = (struct sock *)tsk;
+
+		/* Must be in listening state */
+		if (sk->sk_state != TCP_LISTEN)
+			continue;
+
+		/* TODO: Full address matching
+		 * For now, just return first listener in bucket.
+		 * Phase 3 will implement proper address+port matching.
+		 */
+		if (tsk->bind_addr.ss_family == local_addr->ss_family)
+			return sk;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_lookup_listener);
 
 /*
  * Socket hash table operations
@@ -1311,8 +1445,14 @@ EXPORT_SYMBOL_GPL(tquic_udp_icsk_bind);
  */
 int __init tquic_udp_init(void)
 {
+	int i;
+
 	hash_init(tquic_udp_sock_hash);
 	bitmap_zero(port_alloc.bitmap, TQUIC_PORT_MAX - TQUIC_PORT_MIN + 1);
+
+	/* Initialize listener hash table */
+	for (i = 0; i < ARRAY_SIZE(tquic_listeners); i++)
+		INIT_HLIST_HEAD(&tquic_listeners[i]);
 
 	pr_info("tquic_udp: UDP tunnel subsystem initialized\n");
 	return 0;
