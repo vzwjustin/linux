@@ -20,7 +20,9 @@ tquic-y := \
 	tquic_timer.o \
 	tquic_cid.o \
 	tquic_migration.o \
-	tquic_diag.o
+	tquic_diag.o \
+	tquic_mib.o \
+	tquic_proc.o
 
 # Core protocol components
 obj-$(CONFIG_TQUIC_CORE) += tquic_core.o

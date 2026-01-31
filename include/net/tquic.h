@@ -657,6 +657,22 @@ void __exit tquic_socket_exit(void);
 int __init tquic_diag_init(void);
 void __exit tquic_diag_exit(void);
 
+/* MIB statistics (net/tquic/tquic_mib.c) */
+struct seq_file;
+bool tquic_mib_alloc(struct net *net);
+void tquic_mib_free(struct net *net);
+void tquic_mib_seq_show(struct seq_file *seq);
+int __init tquic_mib_init(struct net *net);
+void __exit tquic_mib_exit(struct net *net);
+
+/* Proc interface (net/tquic/tquic_proc.c) */
+struct tquic_error_ring;
+int __init tquic_proc_init(struct net *net);
+void __exit tquic_proc_exit(struct net *net);
+void tquic_log_error(struct net *net, struct tquic_connection *conn,
+		     u32 error_code, const char *msg);
+const char *tquic_error_name(u32 error_code);
+
 /*
  * Per-Network Namespace API
  *
