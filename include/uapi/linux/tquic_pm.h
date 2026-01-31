@@ -70,6 +70,16 @@ enum tquic_pm_attr {
 	TQUIC_PM_ATTR_MAX_PATHS,	/* u8: Maximum paths */
 	TQUIC_PM_ATTR_SUBFLOWS,		/* u8: Current subflow count */
 
+	/* Path metrics */
+	TQUIC_PM_ATTR_RTT,		/* u32: Smoothed RTT in microseconds */
+	TQUIC_PM_ATTR_RTTVAR,		/* u32: RTT variance in microseconds */
+	TQUIC_PM_ATTR_MIN_RTT,		/* u32: Minimum RTT observed */
+	TQUIC_PM_ATTR_BANDWIDTH,	/* u64: Estimated bandwidth bytes/sec */
+	TQUIC_PM_ATTR_LOSS_RATE,	/* u32: Loss rate in 0.01% units */
+
+	/* Error reporting */
+	TQUIC_PM_ATTR_ERROR,		/* string: Error message for failed commands */
+
 	__TQUIC_PM_ATTR_AFTER_LAST,
 	TQUIC_PM_ATTR_MAX = __TQUIC_PM_ATTR_AFTER_LAST - 1,
 };
@@ -96,9 +106,34 @@ enum tquic_pm_event {
 	TQUIC_PM_EVENT_PRIORITY,	/* Priority changed */
 	TQUIC_PM_EVENT_LISTENER_CREATED,
 	TQUIC_PM_EVENT_LISTENER_CLOSED,
+	TQUIC_PM_EVENT_VALIDATED,	/* Path passed PATH_CHALLENGE */
+	TQUIC_PM_EVENT_FAILED,		/* Path validation failed after retries */
+	TQUIC_PM_EVENT_DEGRADED,	/* Path quality degraded */
 
 	__TQUIC_PM_EVENT_AFTER_LAST,
 	TQUIC_PM_EVENT_MAX = __TQUIC_PM_EVENT_AFTER_LAST - 1,
+};
+
+/*
+ * Multicast group names for netlink subscription
+ */
+#define TQUIC_PM_CMD_GRP_NAME	"tquic_pm_cmd"
+#define TQUIC_PM_EV_GRP_NAME	"tquic_pm_events"
+
+/*
+ * Address attribute set for nested address encoding
+ */
+enum tquic_pm_addr_attr {
+	TQUIC_PM_ADDR_ATTR_UNSPEC,
+	TQUIC_PM_ADDR_ATTR_FAMILY,	/* u16: Address family (AF_INET/AF_INET6) */
+	TQUIC_PM_ADDR_ATTR_ID,		/* u8: Address identifier */
+	TQUIC_PM_ADDR_ATTR_ADDR4,	/* struct in_addr: IPv4 address */
+	TQUIC_PM_ADDR_ATTR_ADDR6,	/* struct in6_addr: IPv6 address */
+	TQUIC_PM_ADDR_ATTR_PORT,	/* u16: Port number */
+	TQUIC_PM_ADDR_ATTR_IF_IDX,	/* s32: Interface index */
+
+	__TQUIC_PM_ADDR_ATTR_AFTER_LAST,
+	TQUIC_PM_ADDR_ATTR_MAX = __TQUIC_PM_ADDR_ATTR_AFTER_LAST - 1,
 };
 
 #endif /* _UAPI_LINUX_TQUIC_PM_H */
