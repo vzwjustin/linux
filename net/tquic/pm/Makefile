@@ -9,4 +9,5 @@ tquic_pm-y := \
 	pm_types.o \
 	path_manager.o \
 	pm_netlink.o \
-	pm_userspace.o
+	pm_userspace.o \
+	path_validation.o

@@ -102,18 +102,22 @@ enum tquic_stream_state {
  * enum tquic_path_state - Path state for WAN bonding
  * @TQUIC_PATH_UNUSED: Path slot not in use
  * @TQUIC_PATH_PENDING: Path validation in progress
+ * @TQUIC_PATH_VALIDATED: Validation passed but not active
  * @TQUIC_PATH_ACTIVE: Path validated and usable
  * @TQUIC_PATH_STANDBY: Path usable but not preferred
+ * @TQUIC_PATH_UNAVAILABLE: Interface down, state preserved for recovery
  * @TQUIC_PATH_FAILED: Path has failed, may recover
  * @TQUIC_PATH_CLOSED: Path permanently closed
  */
 enum tquic_path_state {
 	TQUIC_PATH_UNUSED = 0,
-	TQUIC_PATH_PENDING,
-	TQUIC_PATH_ACTIVE,
-	TQUIC_PATH_STANDBY,
-	TQUIC_PATH_FAILED,
-	TQUIC_PATH_CLOSED,
+	TQUIC_PATH_PENDING,		/* Awaiting validation */
+	TQUIC_PATH_VALIDATED,		/* Validation passed */
+	TQUIC_PATH_ACTIVE,		/* In use for data */
+	TQUIC_PATH_STANDBY,		/* Backup path */
+	TQUIC_PATH_UNAVAILABLE,		/* Interface down, state preserved */
+	TQUIC_PATH_FAILED,		/* Validation failed or errors */
+	TQUIC_PATH_CLOSED,		/* Removal in progress */
 };
 
 /**
@@ -158,10 +162,14 @@ struct tquic_path_stats {
 	u32 cwnd;
 };
 
+/* Maximum pending PATH_RESPONSE frames per path to prevent memory exhaustion */
+#define TQUIC_MAX_PENDING_RESPONSES 256
+
 /**
  * struct tquic_path - A network path for WAN bonding
  * @conn: Parent connection (back-pointer for safe access)
  * @state: Current path state
+ * @saved_state: State before UNAVAILABLE (for recovery)
  * @path_id: Unique identifier for this path
  * @local_addr: Local address for this path
  * @remote_addr: Remote address for this path
@@ -172,15 +180,20 @@ struct tquic_path_stats {
  * @mtu: Path MTU
  * @priority: Path priority (lower = preferred)
  * @weight: Weight for weighted schedulers
+ * @dev: Network device for this path
  * @last_activity: Timestamp of last activity
  * @validation_timer: Path validation timer
  * @probe_count: Number of outstanding probes
- * @challenge_data: PATH_CHALLENGE data
+ * @challenge_data: PATH_CHALLENGE data (legacy field, replaced by validation)
  * @list: Connection's path list linkage
+ * @validation: Validation state (RFC 9000 PATH_CHALLENGE/RESPONSE)
+ * @response: Response queue (prevent memory exhaustion)
+ * @rcu_head: RCU callback head for deferred freeing
  */
 struct tquic_path {
 	struct tquic_connection *conn;
 	enum tquic_path_state state;
+	enum tquic_path_state saved_state;	/* State before unavailable */
 	u32 path_id;
 
 	struct sockaddr_storage local_addr;
@@ -196,12 +209,30 @@ struct tquic_path {
 	u8 priority;
 	u8 weight;
 
+	struct net_device *dev;		/* Interface for this path */
 	ktime_t last_activity;
 	struct timer_list validation_timer;
 	u8 probe_count;
-	u8 challenge_data[8];
+	u8 challenge_data[8];  /* Legacy - use validation.challenge_data instead */
 
 	struct list_head list;
+
+	/* Validation state */
+	struct {
+		u8 challenge_data[8];         /* Sent challenge */
+		ktime_t challenge_sent;       /* When challenge was sent */
+		bool challenge_pending;       /* Awaiting response */
+		u8 retries;                   /* Retry count */
+		struct timer_list timer;      /* Retransmission timer */
+	} validation;
+
+	/* Response queue (prevent memory exhaustion - RFC 9000 Section 8.2) */
+	struct {
+		struct sk_buff_head queue;    /* Pending PATH_RESPONSE frames */
+		atomic_t count;               /* Current queue depth */
+	} response;
+
+	struct rcu_head rcu_head;	/* RCU callback for kfree_rcu */
 };
 
 /**
@@ -479,6 +510,19 @@ void tquic_conn_flush_paths(struct tquic_connection *conn);
 /* Path manager connection lifecycle */
 int tquic_pm_conn_init(struct tquic_connection *conn);
 void tquic_pm_conn_release(struct tquic_connection *conn);
+
+/* Path validation (PATH_CHALLENGE/RESPONSE) - net/tquic/pm/path_validation.c */
+int tquic_path_start_validation(struct tquic_connection *conn,
+				 struct tquic_path *path);
+int tquic_path_handle_challenge(struct tquic_connection *conn,
+				 struct tquic_path *path,
+				 const u8 *data);
+int tquic_path_handle_response(struct tquic_connection *conn,
+				struct tquic_path *path,
+				const u8 *data);
+void tquic_path_validation_timeout(struct timer_list *t);
+int tquic_path_send_challenge(struct tquic_connection *conn,
+			       struct tquic_path *path);
 
 /*
  * Connection State Machine API
