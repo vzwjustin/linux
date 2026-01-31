@@ -32,6 +32,8 @@
 #include <net/route.h>
 #include <net/addrconf.h>
 
+#include "tquic_bonding.h"
+
 /*
  * Path States (RFC 9000 Section 8.2 compliant)
  */
@@ -266,6 +268,9 @@ struct tquic_path_manager {
 
 	/* Network namespace */
 	struct net		*net;
+
+	/* Bonding state machine context (Phase 05) */
+	struct tquic_bonding_ctx *bonding;
 
 	/* Callbacks */
 	void			*cb_ctx;
@@ -1253,6 +1258,18 @@ struct tquic_path_manager *tquic_pm_init(struct net *net, gfp_t gfp)
 	INIT_WORK(&pm->failover_work, tquic_pm_failover_work_fn);
 	INIT_DELAYED_WORK(&pm->probe_work, tquic_pm_probe_work_fn);
 
+	/* Initialize bonding state machine */
+	pm->bonding = tquic_bonding_init(pm, gfp);
+	if (!pm->bonding) {
+		kfree(pm);
+		return NULL;
+	}
+
+	/* Wire up bonding callbacks */
+	pm->cb_ctx = pm->bonding;
+	pm->on_path_available = tquic_bonding_on_path_validated;
+	pm->on_path_failed = tquic_bonding_on_path_failed;
+
 	/* Register with global list */
 	spin_lock_bh(&tquic_pm_list_lock);
 	list_add_tail_rcu(&pm->path_list, &tquic_pm_list);
@@ -1260,7 +1277,7 @@ struct tquic_path_manager *tquic_pm_init(struct net *net, gfp_t gfp)
 
 	atomic_inc(&tquic_pm_count);
 
-	pr_debug("path manager initialized %p\n", pm);
+	pr_debug("path manager initialized %p (bonding=%p)\n", pm, pm->bonding);
 
 	return pm;
 }
@@ -1297,6 +1314,12 @@ void tquic_pm_destroy(struct tquic_path_manager *pm)
 	spin_unlock_bh(&pm->lock);
 
 	synchronize_rcu();
+
+	/* Destroy bonding context */
+	if (pm->bonding) {
+		tquic_bonding_destroy(pm->bonding);
+		pm->bonding = NULL;
+	}
 
 	atomic_dec(&tquic_pm_count);
 
@@ -1399,6 +1422,10 @@ struct tquic_path *tquic_pm_add_path(struct tquic_path_manager *pm,
 		path->wan_type < __TQUIC_WAN_TYPE_MAX ?
 		tquic_wan_type_names[path->wan_type] : "unknown");
 
+	/* Notify bonding state machine of new path */
+	if (pm->bonding)
+		tquic_bonding_on_path_added(pm->bonding, path);
+
 	return path;
 }
 EXPORT_SYMBOL_GPL(tquic_pm_add_path);
@@ -1460,6 +1487,10 @@ void tquic_pm_remove_path(struct tquic_path_manager *pm, struct tquic_path *path
 	}
 
 	spin_unlock_bh(&pm->lock);
+
+	/* Notify bonding state machine before path removal */
+	if (pm->bonding)
+		tquic_bonding_on_path_removed(pm->bonding, path);
 
 	tquic_path_set_state(path, TQUIC_PATH_CLOSING);
 

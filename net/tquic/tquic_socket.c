@@ -695,9 +695,27 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 		break;
 
 	case TQUIC_BOND_PATH_PRIO:
-	case TQUIC_BOND_PATH_WEIGHT:
-		/* These require additional path info via ancillary data */
+		/* Requires additional path info */
 		return -EINVAL;
+
+	case TQUIC_BOND_PATH_WEIGHT: {
+		struct tquic_path_weight_args args;
+
+		if (optlen < sizeof(args))
+			return -EINVAL;
+
+		if (copy_from_sockptr(&args, optval, sizeof(args)))
+			return -EFAULT;
+
+		if (args.reserved[0] || args.reserved[1] || args.reserved[2])
+			return -EINVAL;
+
+		if (!tsk->conn || !tsk->conn->pm)
+			return -ENOTCONN;
+
+		/* Bonding context accessed via path manager */
+		return tquic_bond_set_path_weight(tsk->conn, args.path_id, args.weight);
+	}
 
 	case TQUIC_MULTIPATH:
 		/* Enable/disable multipath */

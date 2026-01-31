@@ -26,9 +26,9 @@
 #include <linux/workqueue.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
+#include <net/tquic.h>
 
 #include "tquic_bonding.h"
-#include "tquic_reorder.h"
 
 /*
  * State name strings for debugging/logging
@@ -807,6 +807,82 @@ void tquic_bonding_get_info(struct tquic_bonding_ctx *bc,
 	spin_unlock_bh(&bc->state_lock);
 }
 EXPORT_SYMBOL_GPL(tquic_bonding_get_info);
+
+/*
+ * ============================================================================
+ * Connection-Level Bonding API
+ *
+ * These functions provide a connection-level interface for bonding operations,
+ * used by socket code (setsockopt/getsockopt).
+ * ============================================================================
+ */
+
+/**
+ * tquic_bond_set_path_weight - Set path weight via connection
+ * @conn: TQUIC connection
+ * @path_id: Path identifier (0-7)
+ * @weight: Weight value (50-1000, or 0 to clear override)
+ *
+ * Wrapper for socket code to set bonding path weight.
+ * Accesses bonding context through path manager.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+int tquic_bond_set_path_weight(struct tquic_connection *conn,
+			       u8 path_id, u32 weight)
+{
+	struct tquic_path_manager *pm;
+	struct tquic_bonding_ctx *bc;
+
+	if (!conn)
+		return -EINVAL;
+
+	/*
+	 * Access bonding context via path manager.
+	 * The pm pointer is stored in tquic_pm_state->priv for now.
+	 * In future, this could be a direct field in tquic_connection.
+	 *
+	 * For now, we need to get the path_manager from net/quic/tquic_path.c.
+	 * The bonding context is stored in pm->bonding.
+	 */
+	pm = (struct tquic_path_manager *)conn->scheduler;
+	if (!pm)
+		return -ENOENT;
+
+	bc = pm->bonding;
+	if (!bc)
+		return -ENOENT;
+
+	return tquic_bonding_set_path_weight(bc, path_id, weight);
+}
+EXPORT_SYMBOL_GPL(tquic_bond_set_path_weight);
+
+/**
+ * tquic_bond_get_path_weight - Get path weight via connection
+ * @conn: TQUIC connection
+ * @path_id: Path identifier (0-7)
+ *
+ * Returns: Weight value (0-1000), or 0 if invalid
+ */
+u32 tquic_bond_get_path_weight(struct tquic_connection *conn, u8 path_id)
+{
+	struct tquic_path_manager *pm;
+	struct tquic_bonding_ctx *bc;
+
+	if (!conn)
+		return 0;
+
+	pm = (struct tquic_path_manager *)conn->scheduler;
+	if (!pm)
+		return 0;
+
+	bc = pm->bonding;
+	if (!bc)
+		return 0;
+
+	return tquic_bonding_get_path_weight(bc, path_id);
+}
+EXPORT_SYMBOL_GPL(tquic_bond_get_path_weight);
 
 /*
  * ============================================================================

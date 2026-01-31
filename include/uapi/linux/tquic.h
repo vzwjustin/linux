@@ -200,6 +200,27 @@ struct tquic_add_path {
 #define TQUIC_PATH_FLAG_PREFERRED	(1 << 2)  /* Preferred path */
 
 /**
+ * struct tquic_path_weight_args - Arguments for TQUIC_BOND_PATH_WEIGHT sockopt
+ * @path_id: Path identifier (0-7)
+ * @weight: Weight value (50-1000, or 0 to clear override)
+ * @reserved: Reserved, must be 0
+ *
+ * Used with setsockopt(TQUIC_BOND_PATH_WEIGHT) to set user-defined
+ * path weight for bonding traffic distribution.
+ *
+ * Weight values:
+ *   0: Clear user override, return to automatic derivation
+ *   50-1000: User-defined weight (50 = 5%, 1000 = 100%)
+ *
+ * The minimum weight of 50 (5%) prevents path starvation.
+ */
+struct tquic_path_weight_args {
+	__u8	path_id;
+	__u8	reserved[3];
+	__u32	weight;
+};
+
+/**
  * struct tquic_bond_stats - Bonding statistics
  * @total_paths: Total paths ever added
  * @active_paths: Currently active paths
