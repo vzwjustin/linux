@@ -18,4 +18,5 @@ quic-y := \
 	timer.o \
 	ack.o \
 	offload.o \
-	output.o
+	output.o \
+	tquic_bonding.o
