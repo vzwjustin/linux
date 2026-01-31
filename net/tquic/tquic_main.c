@@ -25,6 +25,7 @@
 #include <net/udp.h>
 #include <net/udp_tunnel.h>
 #include <net/tquic.h>
+#include <net/tquic_pm.h>
 
 /* Module info */
 MODULE_AUTHOR("Linux Foundation");
@@ -298,6 +299,113 @@ void tquic_conn_migrate(struct tquic_connection *conn, struct tquic_path *new_pa
 	spin_unlock(&conn->lock);
 }
 EXPORT_SYMBOL_GPL(tquic_conn_migrate);
+
+/*
+ * Path Manager Connection Lifecycle
+ */
+
+/**
+ * tquic_pm_conn_init - Initialize path manager for connection
+ * @conn: Connection to initialize PM for
+ *
+ * Called when connection is established. Selects PM type based on
+ * sysctl configuration and initializes PM state. For kernel PM with
+ * auto_discover enabled, triggers initial path discovery.
+ *
+ * Returns 0 on success, negative error on failure.
+ */
+int tquic_pm_conn_init(struct tquic_connection *conn)
+{
+	struct net *net = sock_net(conn->sk);
+	struct tquic_pm_pernet *pernet;
+	struct tquic_pm_ops *ops;
+	struct tquic_pm_state *pm_state;
+	int ret;
+
+	if (!conn || !conn->sk)
+		return -EINVAL;
+
+	pernet = tquic_pm_get_pernet(net);
+	if (!pernet)
+		return -ENOENT;
+
+	/* Get PM ops for current type */
+	ops = tquic_pm_get_type(net);
+	if (!ops) {
+		pr_warn("TQUIC: No PM ops registered for type %u\n",
+			pernet->pm_type);
+		return -ENOENT;
+	}
+
+	/* Allocate PM state */
+	pm_state = kzalloc(sizeof(*pm_state), GFP_KERNEL);
+	if (!pm_state)
+		return -ENOMEM;
+
+	pm_state->ops = ops;
+	pm_state->priv = NULL;
+
+	conn->pm = pm_state;
+
+	/* Generate unique connection token for netlink identification */
+	conn->token = get_random_u32();
+
+	/* Call PM-specific init if available */
+	if (ops->init) {
+		ret = ops->init(net);
+		if (ret < 0) {
+			pr_err("TQUIC: PM init failed: %d\n", ret);
+			kfree(pm_state);
+			conn->pm = NULL;
+			return ret;
+		}
+	}
+
+	/* For kernel PM with auto_discover, trigger initial discovery
+	 * This discovers paths for already-up interfaces with default routes
+	 */
+	if (pernet->pm_type == TQUIC_PM_TYPE_KERNEL &&
+	    pernet->auto_discover) {
+		/* Initial discovery happens via netdevice notifier
+		 * when interfaces are already up. The notifier was
+		 * registered in tquic_pm_kernel_init().
+		 */
+		pr_debug("TQUIC: Kernel PM initialized with auto_discover\n");
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_pm_conn_init);
+
+/**
+ * tquic_pm_conn_release - Clean up path manager state for connection
+ * @conn: Connection to release PM for
+ *
+ * Called when connection is being closed. Releases PM-specific state.
+ */
+void tquic_pm_conn_release(struct tquic_connection *conn)
+{
+	struct tquic_pm_state *pm_state;
+
+	if (!conn || !conn->pm)
+		return;
+
+	pm_state = conn->pm;
+
+	/* Call PM-specific release if available */
+	if (pm_state->ops && pm_state->ops->release && conn->sk) {
+		struct net *net = sock_net(conn->sk);
+		pm_state->ops->release(net);
+	}
+
+	/* Free PM-specific private data if any */
+	if (pm_state->priv)
+		kfree(pm_state->priv);
+
+	kfree(pm_state);
+	conn->pm = NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_pm_conn_release);
 
 /*
  * Stream Management

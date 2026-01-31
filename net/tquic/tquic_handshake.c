@@ -485,6 +485,9 @@ static void tquic_server_handshake_done(void *data, int status,
 		inet_sk_set_state(child_sk, TCP_ESTABLISHED);
 		conn->state = TQUIC_CONN_CONNECTED;
 
+		/* Initialize path manager for server-side connection */
+		tquic_pm_conn_init(conn);
+
 		/* Find listener and add to accept queue */
 		listener_sk = conn->sk;  /* Listener stored during creation */
 		if (listener_sk && listener_sk != child_sk &&

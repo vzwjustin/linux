@@ -288,6 +288,8 @@ struct tquic_conn_stats {
  * @scheduler: Packet scheduler
  * @state_machine: Connection state machine (extended state)
  * @cid_pool: Connection ID pool (tquic_cid.c)
+ * @pm: Path manager state
+ * @token: Connection token for netlink identification
  * @lock: Connection lock
  * @refcnt: Reference counter
  * @sk: Associated socket
@@ -335,6 +337,12 @@ struct tquic_connection {
 
 	/* Connection ID pool (tquic_cid.c) */
 	void *cid_pool;
+
+	/* Path manager state */
+	struct tquic_pm_state *pm;
+
+	/* Connection token for netlink identification */
+	u32 token;
 
 	spinlock_t lock;
 	refcount_t refcnt;
@@ -465,6 +473,12 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 int tquic_conn_remove_path(struct tquic_connection *conn, u32 path_id);
 struct tquic_path *tquic_conn_get_path(struct tquic_connection *conn, u32 path_id);
 void tquic_conn_migrate(struct tquic_connection *conn, struct tquic_path *new_path);
+struct tquic_connection *tquic_conn_lookup_by_token(struct net *net, u32 token);
+void tquic_conn_flush_paths(struct tquic_connection *conn);
+
+/* Path manager connection lifecycle */
+int tquic_pm_conn_init(struct tquic_connection *conn);
+void tquic_pm_conn_release(struct tquic_connection *conn);
 
 /*
  * Connection State Machine API

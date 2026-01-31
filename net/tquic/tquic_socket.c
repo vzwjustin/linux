@@ -291,6 +291,14 @@ int tquic_connect(struct sock *sk, struct sockaddr *addr, int addr_len)
 	}
 
 	inet_sk_set_state(sk, TCP_ESTABLISHED);
+
+	/* Initialize path manager after connection established */
+	ret = tquic_pm_conn_init(conn);
+	if (ret < 0) {
+		pr_warn("tquic: PM init failed: %d\n", ret);
+		/* Continue anyway - PM is optional for basic operation */
+	}
+
 	release_sock(sk);
 
 	pr_debug("tquic: client connection established\n");
@@ -560,6 +568,9 @@ int tquic_close(struct sock *sk, long timeout)
 	struct tquic_sock *tsk = tquic_sk(sk);
 
 	if (tsk->conn) {
+		/* Release path manager state before connection teardown */
+		tquic_pm_conn_release(tsk->conn);
+
 		/*
 		 * If we're still connected, initiate graceful close.
 		 * The connection close will proceed through CLOSING -> DRAINING -> CLOSED.
