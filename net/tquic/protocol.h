@@ -61,6 +61,7 @@
 #define _NET_TQUIC_PROTOCOL_H
 
 #include <linux/spinlock.h>
+#include <linux/lockdep.h>
 #include <net/inet_connection_sock.h>
 #include <net/tquic.h>
 
@@ -192,5 +193,25 @@ static inline void tquic_sk_owned_by_me(const struct tquic_sock *tsk)
 #else
 static inline void tquic_sk_owned_by_me(const struct tquic_sock *tsk) {}
 #endif
+
+/*
+ * Lockdep class keys for TQUIC socket locks
+ *
+ * These are used to distinguish lock instances so lockdep can properly
+ * validate locking patterns between different socket types (IPv4 vs IPv6)
+ * and different lock levels (socket lock vs connection lock).
+ *
+ * Keys are indexed: [0] = IPv4, [1] = IPv6
+ */
+extern struct lock_class_key tquic_slock_keys[2];
+extern struct lock_class_key tquic_lock_keys[2];
+
+/*
+ * Connection lock class keys
+ * Separate from socket locks for proper nesting validation
+ */
+extern struct lock_class_key tquic_conn_lock_key;
+extern struct lock_class_key tquic_path_lock_key;
+extern struct lock_class_key tquic_stream_lock_key;
 
 #endif /* _NET_TQUIC_PROTOCOL_H */
