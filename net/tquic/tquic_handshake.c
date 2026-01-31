@@ -20,6 +20,7 @@
 #include <uapi/linux/tquic.h>
 
 #include "protocol.h"
+#include "tquic_mib.h"
 
 /**
  * struct tquic_handshake_state - Handshake state tracking
@@ -84,12 +85,17 @@ void tquic_handshake_done(void *data, int status, key_serial_t peerid)
 		if (tsk->conn)
 			tsk->conn->state = TQUIC_CONN_CONNECTED;
 
+		/* Update MIB counters for successful handshake */
+		TQUIC_INC_STATS(sock_net(sk), TQUIC_MIB_HANDSHAKESCOMPLETE);
+		TQUIC_INC_STATS(sock_net(sk), TQUIC_MIB_CURRESTAB);
+
 		pr_debug("tquic: TLS handshake successful, connection ready\n");
 	} else {
 		/*
 		 * Handshake failed - map status to EQUIC error if needed.
 		 * The tlshd daemon returns standard errno values.
 		 */
+		TQUIC_INC_STATS(sock_net(sk), TQUIC_MIB_HANDSHAKESFAILED);
 		pr_debug("tquic: TLS handshake failed with status %d\n", status);
 	}
 
@@ -271,6 +277,7 @@ int tquic_wait_for_handshake(struct sock *sk, u32 timeout_ms)
 		/* Timeout expired */
 		pr_debug("tquic: handshake timed out after %u ms\n", timeout_ms);
 		tls_handshake_cancel(sk);
+		TQUIC_INC_STATS(sock_net(sk), TQUIC_MIB_HANDSHAKESTIMEOUT);
 		return -EQUIC_HANDSHAKE_TIMEOUT;
 	}
 

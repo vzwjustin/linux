@@ -29,6 +29,8 @@
 #include <crypto/aead.h>
 #include <net/tquic.h>
 
+#include "tquic_mib.h"
+
 /* QUIC frame types */
 #define TQUIC_FRAME_PADDING		0x00
 #define TQUIC_FRAME_PING		0x01
@@ -1395,6 +1397,12 @@ static int tquic_output_packet(struct tquic_connection *conn,
 		path->stats.tx_packets++;
 		path->stats.tx_bytes += skb->len;
 		path->last_activity = ktime_get();
+
+		/* Update MIB counters for packet transmission */
+		if (conn && conn->sk) {
+			TQUIC_INC_STATS(sock_net(conn->sk), TQUIC_MIB_PACKETSTX);
+			TQUIC_ADD_STATS(sock_net(conn->sk), TQUIC_MIB_BYTESTX, skb->len);
+		}
 	}
 
 	return ret;
@@ -1599,6 +1607,10 @@ int tquic_send_path_challenge(struct tquic_connection *conn,
 	skb = tquic_assemble_packet(conn, path, -1, pkt_num, &frames);
 	if (!skb)
 		return -ENOMEM;
+
+	/* Update MIB counter for path migration attempt */
+	if (conn->sk)
+		TQUIC_INC_STATS(sock_net(conn->sk), TQUIC_MIB_PATHMIGRATIONS);
 
 	return tquic_output_packet(conn, path, skb);
 }

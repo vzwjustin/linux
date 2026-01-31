@@ -27,6 +27,8 @@
 #include <crypto/aead.h>
 #include <net/tquic.h>
 
+#include "tquic_mib.h"
+
 /* QUIC frame types (must match tquic_output.c) */
 #define TQUIC_FRAME_PADDING		0x00
 #define TQUIC_FRAME_PING		0x01
@@ -545,6 +547,10 @@ static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 
 		/* RTT sample = now - sent_time - ack_delay */
 		/* This is simplified; actual implementation needs sent_time tracking */
+
+		/* Update MIB counter for RTT sample */
+		if (ctx->conn && ctx->conn->sk)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_RTTSAMPLES);
 	}
 
 	/* Mark acknowledged packets */
@@ -790,6 +796,10 @@ static int tquic_process_path_response_frame(struct tquic_rx_ctx *ctx)
 	if (ctx->path &&
 	    memcmp(data, ctx->path->challenge_data, 8) == 0) {
 		tquic_path_validate(ctx->conn, ctx->path);
+
+		/* Update MIB counter for path validation */
+		if (ctx->conn && ctx->conn->sk)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_PATHVALIDATED);
 	}
 
 	ctx->ack_eliciting = true;
@@ -921,6 +931,20 @@ static int tquic_process_connection_close_frame(struct tquic_rx_ctx *ctx, bool a
 	spin_lock(&ctx->conn->lock);
 	ctx->conn->state = TQUIC_CONN_DRAINING;
 	spin_unlock(&ctx->conn->lock);
+
+	/* Update MIB counters for connection close */
+	if (ctx->conn && ctx->conn->sk) {
+		TQUIC_DEC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_CURRESTAB);
+		if (error_code == EQUIC_NO_ERROR)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_CONNCLOSED);
+		else
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_CONNRESET);
+
+		/* Track specific EQUIC error */
+		enum linux_tquic_mib_field mib_field = tquic_equic_to_mib(error_code);
+		if (mib_field != TQUIC_MIB_NUM)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), mib_field);
+	}
 
 	return 0;
 }
@@ -1437,6 +1461,12 @@ static int tquic_process_packet(struct tquic_connection *conn,
 			path->stats.rx_packets++;
 			path->stats.rx_bytes += len;
 			path->last_activity = ktime_get();
+		}
+
+		/* Update MIB counters for packet reception */
+		if (conn->sk) {
+			TQUIC_INC_STATS(sock_net(conn->sk), TQUIC_MIB_PACKETSRX);
+			TQUIC_ADD_STATS(sock_net(conn->sk), TQUIC_MIB_BYTESRX, len);
 		}
 	}
 
