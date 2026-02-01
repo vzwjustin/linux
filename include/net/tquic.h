@@ -424,6 +424,17 @@ struct tquic_sock {
 
 	/* Socket options */
 	bool nodelay;		/* TQUIC_NODELAY: disable Nagle, send immediately */
+
+	/*
+	 * Scheduler preference (set via SO_TQUIC_SCHEDULER before connect)
+	 *
+	 * Per CONTEXT.md: "Scheduler locked at connection establishment,
+	 * cannot change mid-connection". This field stores the user's
+	 * preference until connection is established.
+	 *
+	 * If empty, the per-netns default is used.
+	 */
+	char requested_scheduler[TQUIC_MAX_SCHED_NAME];
 };
 
 static inline struct tquic_sock *tquic_sk(struct sock *sk)

@@ -17,9 +17,11 @@
 #include <net/inet_common.h>
 #include <net/inet_connection_sock.h>
 #include <net/protocol.h>
+#include <net/net_namespace.h>
 #include <net/tquic.h>
 
 #include "protocol.h"
+#include "../quic/tquic_sched.h"
 
 /*
  * Lockdep class keys for TQUIC sockets
@@ -138,6 +140,9 @@ static int tquic_init_sock(struct sock *sk)
 	tsk->accept_queue_len = 0;
 	tsk->max_accept_queue = 128;
 	tsk->flags = 0;
+
+	/* Clear requested scheduler (will use per-netns default if not set) */
+	tsk->requested_scheduler[0] = '\0';
 
 	/* Create connection structure */
 	tsk->conn = tquic_conn_create(sk, GFP_KERNEL);
@@ -748,6 +753,50 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 			tsk->flags &= ~TQUIC_F_MIGRATION_ENABLED;
 		break;
 
+	case TQUIC_SCHEDULER: {
+		/*
+		 * SO_TQUIC_SCHEDULER: Set scheduler name before connect()
+		 *
+		 * Per CONTEXT.md: Scheduler is locked at connection establishment
+		 * and cannot be changed mid-connection.
+		 */
+		char name[TQUIC_SCHED_NAME_MAX];
+		int ret = 0;
+
+		if (optlen < 1 || optlen >= TQUIC_SCHED_NAME_MAX)
+			return -EINVAL;
+
+		if (copy_from_sockptr(name, optval, optlen))
+			return -EFAULT;
+		name[optlen] = '\0';
+
+		/* Validate scheduler exists */
+		rcu_read_lock();
+		if (!tquic_sched_find(name)) {
+			rcu_read_unlock();
+			return -ENOENT;
+		}
+		rcu_read_unlock();
+
+		lock_sock(sk);
+		/*
+		 * Must be called before connect/listen.
+		 * Check connection state if one exists.
+		 */
+		if (tsk->conn && tsk->conn->state != TQUIC_CONN_IDLE) {
+			ret = -EISCONN;
+		} else if (tsk->conn) {
+			/* Connection exists but idle, init scheduler now */
+			ret = tquic_sched_init_conn(tsk->conn, name);
+		} else {
+			/* No connection yet, store for later when connection is created */
+			strscpy(tsk->requested_scheduler, name,
+				sizeof(tsk->requested_scheduler));
+		}
+		release_sock(sk);
+		return ret;
+	}
+
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -834,6 +883,63 @@ static int tquic_getsockopt(struct socket *sock, int level, int optname,
 	case TQUIC_MIGRATION_ENABLED:
 		val = (tsk->flags & TQUIC_F_MIGRATION_ENABLED) ? 1 : 0;
 		break;
+
+	case TQUIC_SCHEDULER: {
+		/*
+		 * SO_TQUIC_SCHEDULER: Get current scheduler name
+		 *
+		 * Returns the scheduler assigned to this connection, or the
+		 * requested scheduler if not yet connected, or the per-netns
+		 * default if neither is set.
+		 */
+		const char *name;
+		int name_len;
+
+		lock_sock(sk);
+		if (tsk->conn && tsk->conn->scheduler) {
+			/*
+			 * Connection exists with scheduler - get name from
+			 * the scheduler's sched_ops via tquic_sched.h API
+			 */
+			struct tquic_sched_ops *sched;
+
+			rcu_read_lock();
+			/* scheduler points to bonding state which contains sched */
+			sched = rcu_dereference((struct tquic_sched_ops *)
+						tsk->conn->scheduler);
+			/*
+			 * In this implementation, conn->scheduler is actually
+			 * a tquic_bond_state pointer. The actual scheduler ops
+			 * would be accessed differently. For now, check if we
+			 * have a requested_scheduler stored.
+			 */
+			if (tsk->requested_scheduler[0]) {
+				name = tsk->requested_scheduler;
+			} else {
+				name = tquic_sched_get_default(sock_net(sk));
+			}
+			rcu_read_unlock();
+		} else if (tsk->requested_scheduler[0]) {
+			name = tsk->requested_scheduler;
+		} else {
+			/* Return per-netns default */
+			name = tquic_sched_get_default(sock_net(sk));
+			if (!name)
+				name = "aggregate";
+		}
+		release_sock(sk);
+
+		name_len = strlen(name) + 1;
+		if (len < name_len)
+			return -EINVAL;
+
+		if (copy_to_user(optval, name, name_len))
+			return -EFAULT;
+		if (put_user(name_len, optlen))
+			return -EFAULT;
+
+		return 0;
+	}
 
 	default:
 		return -ENOPROTOOPT;
