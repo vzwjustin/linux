@@ -64,6 +64,7 @@ struct tquic_path;
 struct tquic_frame;
 struct tquic_packet;
 struct tquic_coupled_state;
+struct tquic_client;
 
 /**
  * enum tquic_conn_state - Connection state machine states
@@ -81,6 +82,16 @@ enum tquic_conn_state {
 	TQUIC_CONN_CLOSING,
 	TQUIC_CONN_DRAINING,
 	TQUIC_CONN_CLOSED,
+};
+
+/**
+ * enum tquic_conn_role - Connection role (client vs server)
+ * @TQUIC_ROLE_CLIENT: Client-initiated connection
+ * @TQUIC_ROLE_SERVER: Server-side accepted connection
+ */
+enum tquic_conn_role {
+	TQUIC_ROLE_CLIENT = 0,
+	TQUIC_ROLE_SERVER,
 };
 
 /**
@@ -331,6 +342,7 @@ struct tquic_conn_stats {
  */
 struct tquic_connection {
 	enum tquic_conn_state state;
+	enum tquic_conn_role role;
 	u32 version;
 
 	struct tquic_cid scid;
@@ -379,6 +391,9 @@ struct tquic_connection {
 
 	/* Coupled CC state (NULL when coupling disabled) */
 	struct tquic_coupled_state *coupled_cc;
+
+	/* Server-side client binding (NULL for client connections) */
+	struct tquic_client *client;
 
 	/* Connection token for netlink identification */
 	u32 token;

@@ -23,6 +23,7 @@ tquic-y := \
 	tquic_diag.o \
 	tquic_mib.o \
 	tquic_proc.o \
+	tquic_server.o \
 	cong/tquic_cong.o
 
 # Core protocol components
