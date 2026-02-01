@@ -176,7 +176,8 @@ struct tquic_path_stats {
  * @local_cid: Local connection ID for this path
  * @remote_cid: Remote connection ID for this path
  * @stats: Path statistics
- * @cong: Congestion control state
+ * @cong: Congestion control state (algorithm-specific)
+ * @cong_ops: Congestion control algorithm operations
  * @mtu: Path MTU
  * @priority: Path priority (lower = preferred)
  * @weight: Weight for weighted schedulers
@@ -204,6 +205,7 @@ struct tquic_path {
 
 	struct tquic_path_stats stats;
 	void *cong;  /* Congestion control state */
+	struct tquic_cong_ops *cong_ops;  /* Current CC algorithm ops */
 
 	u32 mtu;
 	u8 priority;
