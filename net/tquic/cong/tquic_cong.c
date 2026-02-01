@@ -470,23 +470,49 @@ u64 tquic_cong_get_cwnd(struct tquic_path *path)
 EXPORT_SYMBOL_GPL(tquic_cong_get_cwnd);
 
 /*
- * tquic_cong_get_pacing_rate - Get pacing rate from path's CC algorithm
+ * Minimum pacing rate: 1 MSS per 10ms = 120KB/s
+ * This prevents pacing from becoming a bottleneck on very slow paths.
+ */
+#define TQUIC_MIN_PACING_RATE	120000
+
+/*
+ * tquic_cong_get_pacing_rate - Get pacing rate for a path (bytes/sec)
  * @path: Path to query
  *
- * Return: Current pacing rate in bytes/sec, or 0 if no pacing
+ * Uses bandwidth estimation when available (BBR-style from CC algorithm),
+ * falls back to cwnd/RTT approximation when CC doesn't provide pacing.
+ *
+ * Return: Current pacing rate in bytes/sec
  */
 u64 tquic_cong_get_pacing_rate(struct tquic_path *path)
 {
 	struct tquic_cong_ops *ca;
+	u64 rate = 0;
 
 	if (!path)
-		return 0;
+		return TQUIC_MIN_PACING_RATE;
 
+	/* First try CC-provided pacing rate (bandwidth-based) */
 	ca = path->cong_ops;
 	if (ca && ca->get_pacing_rate && path->cong)
-		return ca->get_pacing_rate(path->cong);
+		rate = ca->get_pacing_rate(path->cong);
 
-	return 0;
+	/* Fallback: cwnd / RTT approximation */
+	if (rate == 0 && path->stats.rtt_smoothed > 0) {
+		u64 cwnd = path->stats.cwnd ?: (10 * 1200);  /* Default 10 packets */
+
+		/* rate = cwnd / RTT (in bytes/sec)
+		 * cwnd is in bytes, RTT is in microseconds
+		 * rate = cwnd * USEC_PER_SEC / rtt_us
+		 */
+		rate = div64_u64(cwnd * USEC_PER_SEC, path->stats.rtt_smoothed);
+	}
+
+	/* Enforce minimum pacing rate */
+	if (rate < TQUIC_MIN_PACING_RATE)
+		rate = TQUIC_MIN_PACING_RATE;
+
+	return rate;
 }
 EXPORT_SYMBOL_GPL(tquic_cong_get_pacing_rate);
 

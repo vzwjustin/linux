@@ -80,6 +80,12 @@ struct netns_tquic {
 
 	/* ECN support for congestion signaling */
 	bool ecn_enabled;
+
+	/* Pacing configuration (default: true per CONTEXT.md) */
+	bool pacing_enabled;
+
+	/* Path degradation threshold (consecutive losses in same round) */
+	int path_degrade_threshold;
 };
 
 #endif /* _NET_NETNS_TQUIC_H */
