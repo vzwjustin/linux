@@ -447,3 +447,4 @@ module_exit(tquic_copa_module_exit);
 MODULE_DESCRIPTION("TQUIC Copa Congestion Control");
 MODULE_AUTHOR("Linux Foundation");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("tquic-cong-copa");

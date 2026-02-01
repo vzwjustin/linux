@@ -368,3 +368,4 @@ module_exit(tquic_bbr_module_exit);
 
 MODULE_DESCRIPTION("TQUIC BBR Congestion Control");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("tquic-cong-bbr");

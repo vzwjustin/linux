@@ -285,3 +285,4 @@ module_exit(tquic_cubic_module_exit);
 
 MODULE_DESCRIPTION("TQUIC CUBIC Congestion Control");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("tquic-cong-cubic");
