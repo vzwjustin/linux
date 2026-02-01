@@ -228,9 +228,8 @@ static LIST_HEAD(tquic_sched_list);
 static struct tquic_scheduler_ops *tquic_default_scheduler;
 
 /*
- * Procfs for statistics
+ * Procfs for statistics (created per-netns via pernet_operations)
  */
-static struct proc_dir_entry *tquic_proc_dir;
 
 /* =========================================================================
  * Utility Functions
@@ -2150,16 +2149,25 @@ EXPORT_SYMBOL_GPL(tquic_path_packet_lost);
 static int tquic_sched_stats_show(struct seq_file *m, void *v)
 {
 	struct tquic_scheduler_ops *sched;
+	struct net *net = seq_file_net(m);
+	const char *default_name;
 
 	seq_puts(m, "TQUIC Packet Schedulers\n");
 	seq_puts(m, "========================\n\n");
 
+	/* Get per-netns default scheduler name */
+	default_name = tquic_sched_get_default(net);
+	if (!default_name)
+		default_name = "aggregate";
+
+	seq_printf(m, "Namespace default: %s\n\n", default_name);
 	seq_puts(m, "Available schedulers:\n");
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(sched, &tquic_sched_list, list) {
-		seq_printf(m, "  - %s%s\n", sched->name,
-			   sched == tquic_default_scheduler ? " (default)" : "");
+		bool is_default = (strcmp(sched->name, default_name) == 0);
+		seq_printf(m, "  %s%s\n", sched->name,
+			   is_default ? " (default)" : "");
 	}
 	rcu_read_unlock();
 
@@ -2170,14 +2178,14 @@ static int tquic_sched_stats_show(struct seq_file *m, void *v)
 
 static int tquic_sched_stats_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, tquic_sched_stats_show, NULL);
+	return single_open_net(inode, file, tquic_sched_stats_show);
 }
 
 static const struct proc_ops tquic_sched_stats_ops = {
 	.proc_open	= tquic_sched_stats_open,
 	.proc_read	= seq_read,
 	.proc_lseek	= seq_lseek,
-	.proc_release	= single_release,
+	.proc_release	= single_release_net,
 };
 
 /*
@@ -2518,6 +2526,61 @@ const char *tquic_get_default_scheduler(void)
 EXPORT_SYMBOL_GPL(tquic_get_default_scheduler);
 
 /* =========================================================================
+ * Per-Network Namespace Initialization
+ * ========================================================================= */
+
+/*
+ * Per-netns scheduler initialization
+ *
+ * Each network namespace gets its own default scheduler setting.
+ * This allows containers to have different scheduler defaults.
+ */
+static int __net_init tquic_sched_net_init(struct net *net)
+{
+	struct proc_dir_entry *pde;
+
+	/* Initialize per-netns default scheduler to aggregate */
+	RCU_INIT_POINTER(net->tquic.default_scheduler, NULL);
+	strscpy(net->tquic.sched_name, "aggregate",
+		sizeof(net->tquic.sched_name));
+
+	/* Create per-netns proc entry */
+	pde = proc_mkdir("tquic", net->proc_net);
+	if (pde) {
+		proc_create_net_single("schedulers", 0444, pde,
+				       tquic_sched_stats_show, NULL);
+	}
+
+	pr_debug("TQUIC scheduler initialized for netns\n");
+	return 0;
+}
+
+static void __net_exit tquic_sched_net_exit(struct net *net)
+{
+	struct tquic_scheduler_ops *sched;
+
+	/* Release per-netns default scheduler reference */
+	rcu_read_lock();
+	sched = rcu_dereference(net->tquic.default_scheduler);
+	rcu_read_unlock();
+
+	if (sched)
+		module_put(sched->owner);
+
+	RCU_INIT_POINTER(net->tquic.default_scheduler, NULL);
+
+	/* Remove per-netns proc entries */
+	remove_proc_subtree("tquic", net->proc_net);
+
+	pr_debug("TQUIC scheduler exited for netns\n");
+}
+
+static struct pernet_operations tquic_sched_net_ops = {
+	.init = tquic_sched_net_init,
+	.exit = tquic_sched_net_exit,
+};
+
+/* =========================================================================
  * Module Initialization
  * ========================================================================= */
 
@@ -2527,14 +2590,7 @@ static int __init tquic_scheduler_init(void)
 
 	pr_info("Initializing TQUIC packet scheduler framework\n");
 
-	/* Create procfs directory */
-	tquic_proc_dir = proc_mkdir("tquic", init_net.proc_net);
-	if (tquic_proc_dir) {
-		proc_create("schedulers", 0444, tquic_proc_dir,
-			    &tquic_sched_stats_ops);
-	}
-
-	/* Register built-in schedulers */
+	/* Register built-in schedulers first (before pernet ops) */
 	ret = tquic_sched_register(&tquic_sched_rr);
 	if (ret)
 		pr_warn("Failed to register round-robin scheduler\n");
@@ -2555,23 +2611,35 @@ static int __init tquic_scheduler_init(void)
 	if (ret)
 		pr_warn("Failed to register adaptive scheduler\n");
 
-	/* Set adaptive as default */
+	/* Set adaptive as global default */
 	tquic_set_default_scheduler("adaptive");
+
+	/* Register per-netns operations (creates proc entries per namespace) */
+	ret = register_pernet_subsys(&tquic_sched_net_ops);
+	if (ret) {
+		pr_err("Failed to register pernet operations\n");
+		goto err_pernet;
+	}
 
 	pr_info("TQUIC scheduler framework initialized\n");
 
 	return 0;
+
+err_pernet:
+	tquic_sched_unregister(&tquic_sched_adaptive);
+	tquic_sched_unregister(&tquic_sched_redundant);
+	tquic_sched_unregister(&tquic_sched_lowlat);
+	tquic_sched_unregister(&tquic_sched_weighted);
+	tquic_sched_unregister(&tquic_sched_rr);
+	return ret;
 }
 
 static void __exit tquic_scheduler_exit(void)
 {
 	pr_info("Unloading TQUIC packet scheduler framework\n");
 
-	/* Remove procfs entries */
-	if (tquic_proc_dir) {
-		remove_proc_entry("schedulers", tquic_proc_dir);
-		remove_proc_entry("tquic", init_net.proc_net);
-	}
+	/* Unregister pernet operations (removes proc entries) */
+	unregister_pernet_subsys(&tquic_sched_net_ops);
 
 	/* Unregister built-in schedulers */
 	tquic_sched_unregister(&tquic_sched_adaptive);
