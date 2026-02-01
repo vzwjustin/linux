@@ -501,6 +501,31 @@ void tquic_migration_path_event(struct tquic_connection *conn,
 
 /*
  * =============================================================================
+ * SERVER-SIDE MIGRATION AND SESSION TTL
+ * =============================================================================
+ *
+ * These functions implement VPS-side connection migration support.
+ */
+
+/* Server-side migration handling (tquic_migration.c) */
+int tquic_server_handle_migration(struct tquic_connection *conn,
+				  struct tquic_path *path,
+				  const struct sockaddr_storage *new_remote);
+
+/* Session TTL for router reconnects (tquic_migration.c) */
+int tquic_server_start_session_ttl(struct tquic_connection *conn);
+int tquic_server_session_resume(struct tquic_connection *conn,
+				struct tquic_path *path);
+
+/* Packet queuing during path unavailability (tquic_migration.c) */
+int tquic_server_queue_packet(struct tquic_connection *conn,
+			      struct sk_buff *skb);
+
+/* Path recovery check (tquic_migration.c) */
+void tquic_server_check_path_recovery(struct tquic_connection *conn);
+
+/*
+ * =============================================================================
  * STREAM SOCKET MANAGEMENT
  * =============================================================================
  *

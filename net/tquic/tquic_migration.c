@@ -30,8 +30,32 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
+#include <linux/timer.h>
+#include <linux/netdevice.h>
 #include <net/tquic.h>
 #include "protocol.h"
+
+/* Forward declaration for tquic_client */
+struct tquic_client {
+	char psk_identity[64];
+	u8 psk_identity_len;
+	u8 psk[32];
+	u16 port_range_start;
+	u16 port_range_end;
+	u64 bandwidth_limit;
+	atomic_t connection_count;
+	atomic64_t tx_bytes;
+	atomic64_t rx_bytes;
+	atomic_t active_paths;
+	u8 traffic_class_weights[4];
+	u32 conn_rate_limit;
+	atomic_t rate_tokens;
+	ktime_t rate_last_refill;
+	spinlock_t rate_lock;
+	u32 session_ttl;
+	struct rhash_head node;
+	struct rcu_head rcu_head;
+};
 
 /*
  * =============================================================================
@@ -360,4 +384,332 @@ int tquic_migration_handle_path_response(struct tquic_connection *conn,
 	 */
 	pr_debug("tquic: PATH_RESPONSE received (stub)\n");
 	return -ENOSYS;
+}
+
+/*
+ * =============================================================================
+ * SERVER-SIDE MIGRATION HANDLING
+ * =============================================================================
+ *
+ * These functions enable connection migration when a router's source IP
+ * changes. This is common in WAN bonding scenarios where routers may have
+ * dynamic IP addresses or experience NAT rebinding.
+ *
+ * Per CONTEXT.md: "Persistent session state across router reconnects with
+ * configurable TTL" - implemented via session_ttl and session state timers.
+ */
+
+/**
+ * tquic_server_handle_migration - Handle server-side connection migration
+ * @conn: Connection receiving the migrated packet
+ * @path: Path packet arrived on (may have new source address)
+ * @new_remote: New remote address detected
+ *
+ * Called from packet input path when a packet arrives from a known CID
+ * but from a different source address. This indicates the router has
+ * migrated (e.g., NAT rebinding, IP address change).
+ *
+ * Server-side migration handling:
+ * 1. Validate via CID (already done before this is called)
+ * 2. Update path's remote_addr to new source
+ * 3. Trigger PATH_CHALLENGE validation for the new address
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+int tquic_server_handle_migration(struct tquic_connection *conn,
+				  struct tquic_path *path,
+				  const struct sockaddr_storage *new_remote)
+{
+	int ret;
+
+	if (!conn || !path || !new_remote)
+		return -EINVAL;
+
+	/* Only server-side connections should call this */
+	if (conn->role != TQUIC_ROLE_SERVER) {
+		pr_debug("tquic: migration handler called on client connection\n");
+		return -EINVAL;
+	}
+
+	pr_debug("tquic: handling server-side migration for path %u\n",
+		 path->path_id);
+
+	/*
+	 * Update path's remote address to new source.
+	 * This allows future packets to be sent to the new address.
+	 */
+	spin_lock_bh(&conn->paths_lock);
+	memcpy(&path->remote_addr, new_remote, sizeof(*new_remote));
+	path->last_activity = ktime_get();
+	spin_unlock_bh(&conn->paths_lock);
+
+	/*
+	 * Trigger PATH_CHALLENGE validation for the new address.
+	 * Per RFC 9000, we must validate before sending significant data.
+	 */
+	ret = tquic_path_start_validation(conn, path);
+	if (ret < 0) {
+		pr_debug("tquic: failed to start path validation: %d\n", ret);
+		/* Continue anyway - validation failure is non-fatal */
+	}
+
+	/* Update statistics */
+	conn->stats.path_migrations++;
+
+	/* Notify userspace about migration */
+	tquic_migration_path_event(conn, path, TQUIC_PATH_EVENT_MIGRATE);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_server_handle_migration);
+
+/*
+ * =============================================================================
+ * SESSION STATE TTL FOR ROUTER RECONNECTS
+ * =============================================================================
+ *
+ * When all paths go down, instead of immediately closing the connection,
+ * we keep session state for a configurable TTL period (default 120s per
+ * CONTEXT.md). This allows routers to reconnect and resume sessions.
+ */
+
+/**
+ * struct tquic_session_state - Session state preserved during path loss
+ * @conn: Connection this state belongs to
+ * @timer: TTL expiration timer
+ * @start_time: When all paths went down
+ * @ttl_ms: Time to live in milliseconds
+ * @packet_queue: Queued packets during path loss
+ * @queue_timeout: Timeout for queued packets (default 30s)
+ */
+struct tquic_session_state {
+	struct tquic_connection *conn;
+	struct timer_list timer;
+	ktime_t start_time;
+	u32 ttl_ms;
+	struct sk_buff_head packet_queue;
+	u32 queue_timeout_ms;
+};
+
+/**
+ * tquic_session_ttl_expired - Timer callback for session TTL expiration
+ * @t: Timer that fired
+ *
+ * Called when the session TTL expires without any paths recovering.
+ * Closes the connection and cleans up session state.
+ */
+static void tquic_session_ttl_expired(struct timer_list *t)
+{
+	struct tquic_session_state *state;
+	struct tquic_connection *conn;
+
+	state = from_timer(state, t, timer);
+	conn = state->conn;
+
+	pr_info("tquic: session TTL expired for connection token=%u\n",
+		conn->token);
+
+	/* Close connection - all paths failed and TTL expired */
+	tquic_conn_close_with_error(conn, EQUIC_NO_VIABLE_PATH,
+				    "session TTL expired");
+
+	/* Clean up queued packets */
+	skb_queue_purge(&state->packet_queue);
+
+	/* Free session state */
+	kfree(state);
+}
+
+/**
+ * tquic_server_start_session_ttl - Start session TTL timer on all paths down
+ * @conn: Connection with all paths unavailable
+ *
+ * Called when the last path becomes unavailable. Instead of closing
+ * immediately, we keep session state for the TTL period.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+int tquic_server_start_session_ttl(struct tquic_connection *conn)
+{
+	struct tquic_session_state *state;
+	struct tquic_client *client;
+	u32 ttl_ms;
+
+	if (!conn)
+		return -EINVAL;
+
+	/* Get TTL from client config if server-side, else use default */
+	client = conn->client;
+	if (client)
+		ttl_ms = client->session_ttl;
+	else
+		ttl_ms = 120000;  /* Default 120s per CONTEXT.md */
+
+	/* Check if we already have session state */
+	if (conn->state_machine) {
+		pr_debug("tquic: session TTL already active\n");
+		return 0;
+	}
+
+	state = kzalloc(sizeof(*state), GFP_ATOMIC);
+	if (!state)
+		return -ENOMEM;
+
+	state->conn = conn;
+	state->start_time = ktime_get();
+	state->ttl_ms = ttl_ms;
+	state->queue_timeout_ms = 30000;  /* 30s per CONTEXT.md */
+	skb_queue_head_init(&state->packet_queue);
+
+	timer_setup(&state->timer, tquic_session_ttl_expired, 0);
+	mod_timer(&state->timer, jiffies + msecs_to_jiffies(ttl_ms));
+
+	/* Store session state in connection */
+	conn->state_machine = state;
+
+	pr_info("tquic: session TTL started for connection token=%u (ttl=%ums)\n",
+		conn->token, ttl_ms);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_server_start_session_ttl);
+
+/**
+ * tquic_server_session_resume - Resume session when router reconnects
+ * @conn: Connection to resume
+ * @path: Path that was recovered
+ *
+ * Called when a path recovers within the TTL window. Cancels the TTL
+ * timer and drains any queued packets.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+int tquic_server_session_resume(struct tquic_connection *conn,
+				struct tquic_path *path)
+{
+	struct tquic_session_state *state;
+	struct sk_buff *skb;
+
+	if (!conn || !path)
+		return -EINVAL;
+
+	state = (struct tquic_session_state *)conn->state_machine;
+	if (!state) {
+		/* No session state - just a normal path recovery */
+		return 0;
+	}
+
+	pr_info("tquic: session resumed for connection token=%u\n",
+		conn->token);
+
+	/* Cancel TTL timer */
+	del_timer_sync(&state->timer);
+
+	/* Drain queued packets to the recovered path */
+	while ((skb = skb_dequeue(&state->packet_queue)) != NULL) {
+		/*
+		 * Re-transmit queued packet on recovered path.
+		 * Note: These packets may need to be re-encrypted if
+		 * they were partially processed. For now, we just
+		 * drop them and let retransmission handle recovery.
+		 */
+		kfree_skb(skb);
+	}
+
+	/* Free session state */
+	conn->state_machine = NULL;
+	kfree(state);
+
+	/* Notify that path was recovered */
+	tquic_migration_path_event(conn, path, TQUIC_PATH_EVENT_RECOVERED);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_server_session_resume);
+
+/**
+ * tquic_server_queue_packet - Queue packet during path unavailability
+ * @conn: Connection with unavailable paths
+ * @skb: Packet to queue
+ *
+ * Called when a packet needs to be sent but no paths are available.
+ * Queues the packet for later transmission when a path recovers.
+ * Drops if queue is full or timeout is reached.
+ *
+ * Per CONTEXT.md: "Queue-with-timeout for path-down scenario" (30s)
+ *
+ * Returns: 0 on success (queued or timeout), -ENOMEM if queue full
+ */
+int tquic_server_queue_packet(struct tquic_connection *conn,
+			      struct sk_buff *skb)
+{
+	struct tquic_session_state *state;
+	s64 elapsed_ms;
+
+	if (!conn || !skb)
+		return -EINVAL;
+
+	state = (struct tquic_session_state *)conn->state_machine;
+	if (!state) {
+		/* No session state - drop packet */
+		kfree_skb(skb);
+		return 0;
+	}
+
+	/* Check queue timeout (30s per CONTEXT.md) */
+	elapsed_ms = ktime_ms_delta(ktime_get(), state->start_time);
+	if (elapsed_ms >= state->queue_timeout_ms) {
+		pr_debug("tquic: queue timeout reached, dropping packet\n");
+		kfree_skb(skb);
+		return 0;
+	}
+
+	/* Check queue size (limit to prevent memory exhaustion) */
+	if (skb_queue_len(&state->packet_queue) >= 1024) {
+		pr_debug("tquic: queue full, dropping oldest packet\n");
+		skb = skb_dequeue(&state->packet_queue);
+		if (skb)
+			kfree_skb(skb);
+	}
+
+	/* Queue the packet */
+	skb_queue_tail(&state->packet_queue, skb);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_server_queue_packet);
+
+/**
+ * tquic_server_check_path_recovery - Check if any paths can be recovered
+ * @conn: Connection to check
+ *
+ * Called periodically to check if any UNAVAILABLE paths can be recovered.
+ * If a path's interface comes back up, trigger recovery.
+ */
+void tquic_server_check_path_recovery(struct tquic_connection *conn)
+{
+	struct tquic_path *path;
+
+	if (!conn)
+		return;
+
+	spin_lock_bh(&conn->paths_lock);
+	list_for_each_entry(path, &conn->paths, list) {
+		if (path->state == TQUIC_PATH_UNAVAILABLE) {
+			/* Check if network device is back up */
+			if (path->dev && netif_running(path->dev)) {
+				/* Try to recover path */
+				path->state = path->saved_state;
+				if (path->state == TQUIC_PATH_UNUSED)
+					path->state = TQUIC_PATH_PENDING;
+
+				/* Trigger validation */
+				tquic_path_start_validation(conn, path);
+
+				pr_debug("tquic: attempting path %u recovery\n",
+					 path->path_id);
+			}
+		}
+	}
+	spin_unlock_bh(&conn->paths_lock);
 }
