@@ -22,7 +22,8 @@ tquic-y := \
 	tquic_migration.o \
 	tquic_diag.o \
 	tquic_mib.o \
-	tquic_proc.o
+	tquic_proc.o \
+	cong/tquic_cong.o
 
 # Core protocol components
 obj-$(CONFIG_TQUIC_CORE) += tquic_core.o

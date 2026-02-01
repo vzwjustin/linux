@@ -90,6 +90,24 @@ config TQUIC_SCHEDULER
 
 	  If unsure, say Y.
 
+config TQUIC_CONG
+	bool "TQUIC Congestion Control Framework"
+	depends on TQUIC
+	default y
+	help
+	  Congestion control framework for TQUIC multipath connections.
+	  Provides central CC algorithm registration, per-path CC state
+	  lifecycle management, and callback dispatch for ACK/loss/RTT
+	  events.
+
+	  Supports Cubic, BBR, COPA, Westwood, and coupled (OLIA/BALIA)
+	  congestion control algorithms.
+
+	  This option enables the CC framework core. Individual CC
+	  algorithms can be selected separately.
+
+	  If unsure, say Y.
+
 menuconfig TQUIC_CONG_ADVANCED
 	bool "TQUIC: advanced congestion control"
 	depends on TQUIC_CORE

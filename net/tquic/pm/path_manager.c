@@ -20,6 +20,7 @@
 #include <net/sock.h>
 #include <net/route.h>
 #include <net/tquic.h>
+#include "../cong/tquic_cong.h"
 
 /* Path probe configuration */
 #define TQUIC_PM_PROBE_INTERVAL_MS	1000	/* 1 second */
@@ -687,6 +688,14 @@ int tquic_conn_add_path_safe(struct tquic_connection *conn,
 	/* Initialize validation state (timer, queue) */
 	tquic_path_init_validation(path);
 
+	/* Initialize congestion control for this path */
+	ret = tquic_cong_init_path(path, NULL);  /* NULL = use default CC */
+	if (ret) {
+		pr_warn("tquic: failed to init CC for path %u: %d\n",
+			path->path_id, ret);
+		/* Continue without CC - not fatal */
+	}
+
 	/* Add to connection's path list with RCU */
 	spin_lock_bh(&conn->paths_lock);
 	list_add_tail_rcu(&path->list, &conn->paths);
@@ -747,6 +756,9 @@ int tquic_conn_remove_path_safe(struct tquic_connection *conn,
 
 	/* Purge response queue */
 	skb_queue_purge(&path->response.queue);
+
+	/* Release congestion control state */
+	tquic_cong_release_path(path);
 
 	/* Release device reference */
 	if (path->dev)

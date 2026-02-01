@@ -28,6 +28,7 @@
 #include <net/tquic.h>
 
 #include "tquic_mib.h"
+#include "cong/tquic_cong.h"
 
 /* QUIC frame types (must match tquic_output.c) */
 #define TQUIC_FRAME_PADDING		0x00
@@ -539,22 +540,43 @@ static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 		ctx->offset += ret;
 	}
 
-	/* Update RTT estimate */
+	/* Update RTT estimate and notify congestion control */
 	if (ctx->path) {
 		ktime_t now = ktime_get();
 		/* Convert ack_delay to microseconds */
 		u64 ack_delay_us = ack_delay * 8;  /* Default exponent = 3 */
+		u64 rtt_us;
 
-		/* RTT sample = now - sent_time - ack_delay */
-		/* This is simplified; actual implementation needs sent_time tracking */
+		/*
+		 * RTT sample calculation (simplified).
+		 * Full implementation would track sent_time per packet.
+		 * Use path's last_activity as approximation for now.
+		 */
+		rtt_us = ktime_us_delta(now, ctx->path->last_activity);
+		if (rtt_us > ack_delay_us)
+			rtt_us -= ack_delay_us;
 
 		/* Update MIB counter for RTT sample */
 		if (ctx->conn && ctx->conn->sk)
 			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_RTTSAMPLES);
+
+		/*
+		 * Calculate bytes acknowledged from first_ack_range.
+		 * Simplified: use first_ack_range * 1200 (MTU) as estimate.
+		 * Full implementation would use packet tracking.
+		 */
+		{
+			u64 bytes_acked = (first_ack_range + 1) * 1200;
+
+			/* Dispatch ACK event to congestion control */
+			tquic_cong_on_ack(ctx->path, bytes_acked, rtt_us);
+
+			/* Update RTT in CC algorithm */
+			tquic_cong_on_rtt(ctx->path, rtt_us);
+		}
 	}
 
-	/* Mark acknowledged packets */
-	/* This would trigger congestion control updates */
+	/* Mark acknowledged packets - processed by CC above */
 
 	return 0;
 }
