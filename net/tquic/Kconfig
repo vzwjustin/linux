@@ -293,6 +293,30 @@ config TQUIC_NETFILTER
 
 	  If unsure, say Y.
 
+config TQUIC_BPF
+	bool "TQUIC BPF struct_ops for pluggable schedulers"
+	depends on TQUIC_SCHEDULER
+	depends on BPF_SYSCALL
+	depends on BPF_JIT
+	default y
+	help
+	  Enable BPF struct_ops support for TQUIC path schedulers.
+	  This allows writing custom path scheduling algorithms in BPF C
+	  and loading them at runtime, similar to TCP's BPF congestion
+	  control support.
+
+	  With this enabled, you can implement custom scheduling policies
+	  that consider factors like:
+	    - Path RTT and bandwidth estimates
+	    - Loss rates and congestion state
+	    - Application-specific priorities
+	    - Custom load balancing algorithms
+
+	  BPF schedulers are safer than kernel modules as they run in
+	  the BPF sandbox with verified safety guarantees.
+
+	  If unsure, say Y.
+
 config TQUIC_DEBUGFS
 	bool "TQUIC debugfs interface"
 	depends on TQUIC_CORE

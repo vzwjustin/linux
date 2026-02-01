@@ -76,6 +76,10 @@ obj-$(CONFIG_TQUIC_NETFILTER) += tquic_nf.o
 # Socket diagnostics for ss command support
 obj-$(CONFIG_TQUIC_DIAG) += tquic_diag.o
 
+# BPF struct_ops for pluggable schedulers
+obj-$(CONFIG_TQUIC_BPF) += tquic_bpf.o
+tquic_bpf-y := bpf.o
+
 # KUnit tests
 obj-$(CONFIG_TQUIC_KUNIT_TEST) += tquic_test.o
 tquic_test-y := \
