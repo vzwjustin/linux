@@ -1601,4 +1601,46 @@ void tquic_qos_get_stats(u8 traffic_class, u64 *packets, u64 *bytes, u64 *drops)
 int __init tquic_qos_init(void);
 void __exit tquic_qos_exit(void);
 
+/*
+ * =============================================================================
+ * Zero-Copy Splice Forwarding
+ * =============================================================================
+ *
+ * Data forwarding between QUIC streams and TCP sockets using splice.
+ */
+
+/* Forwarding directions */
+#define TQUIC_FORWARD_TX	0	/* QUIC stream -> TCP socket */
+#define TQUIC_FORWARD_RX	1	/* TCP socket -> QUIC stream */
+
+/* Zero-copy splice forwarding */
+ssize_t tquic_forward_splice(struct tquic_tunnel *tunnel, int direction);
+
+/* Hairpin traffic detection and routing */
+struct tquic_client *tquic_forward_check_hairpin(struct tquic_tunnel *tunnel);
+ssize_t tquic_forward_hairpin(struct tquic_tunnel *tunnel,
+			      struct tquic_client *peer);
+
+/* Client registration for hairpin detection */
+int tquic_forward_register_client(struct tquic_client *client,
+				  const struct sockaddr_storage *addr);
+void tquic_forward_unregister_client(struct tquic_client *client);
+
+/* NAT setup verification */
+int tquic_forward_setup_nat(struct net_device *dev);
+
+/* MTU handling */
+u32 tquic_forward_get_mtu(struct tquic_tunnel *tunnel);
+int tquic_forward_signal_mtu(struct tquic_tunnel *tunnel, u32 new_mtu);
+
+/* TCP callback setup */
+int tquic_forward_setup_tcp_callbacks(struct tquic_tunnel *tunnel);
+
+/* GRO/GSO verification */
+int tquic_forward_check_gro_gso(struct net_device *dev);
+
+/* Forwarding subsystem init/exit */
+int __init tquic_forward_init(void);
+void __exit tquic_forward_exit(void);
+
 #endif /* _NET_TQUIC_H */
