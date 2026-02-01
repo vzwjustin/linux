@@ -24,4 +24,6 @@ quic-y := \
 	tquic_failover.o \
 	sched_minrtt.o \
 	sched_aggregate.o \
-	sched_weighted.o
+	sched_weighted.o \
+	sched_blest.o \
+	sched_ecf.o
