@@ -105,4 +105,118 @@ u64 tquic_cong_get_cwnd(struct tquic_path *path);
  */
 u64 tquic_cong_get_pacing_rate(struct tquic_path *path);
 
+/*
+ * =============================================================================
+ * Per-Network Namespace CC Configuration
+ * =============================================================================
+ *
+ * These functions manage per-netns CC defaults and auto-selection.
+ */
+
+struct net;
+
+/*
+ * tquic_cong_set_default - Set default CC algorithm for a network namespace
+ * @net: Network namespace
+ * @name: CC algorithm name
+ *
+ * Set the default CC algorithm for new paths in this namespace.
+ * The algorithm is looked up and validated before being set.
+ *
+ * Returns 0 on success, -ENOENT if algorithm not found,
+ * -EBUSY if module get fails.
+ */
+int tquic_cong_set_default(struct net *net, const char *name);
+
+/*
+ * tquic_cong_get_default - Get default CC algorithm for a network namespace
+ * @net: Network namespace
+ *
+ * Returns pointer to default CC ops, or NULL if none set.
+ * Caller should hold RCU read lock.
+ */
+struct tquic_cong_ops *tquic_cong_get_default(struct net *net);
+
+/*
+ * tquic_cong_get_default_name - Get default CC algorithm name for a netns
+ * @net: Network namespace
+ *
+ * Returns CC algorithm name string, or "cubic" as fallback.
+ */
+const char *tquic_cong_get_default_name(struct net *net);
+
+/*
+ * tquic_cong_select_for_rtt - Select CC algorithm based on RTT
+ * @net: Network namespace for configuration
+ * @rtt_us: Path RTT in microseconds
+ *
+ * If RTT >= bbr_rtt_threshold_ms, returns "bbr" for BBR auto-selection.
+ * Otherwise returns the per-netns default CC algorithm name.
+ *
+ * Returns CC algorithm name to use for this path.
+ */
+const char *tquic_cong_select_for_rtt(struct net *net, u64 rtt_us);
+
+/*
+ * tquic_cong_is_bbr_preferred - Check if BBR should be used for RTT
+ * @net: Network namespace
+ * @rtt_us: Path RTT in microseconds
+ *
+ * Returns true if RTT exceeds the BBR auto-selection threshold.
+ */
+bool tquic_cong_is_bbr_preferred(struct net *net, u64 rtt_us);
+
+/*
+ * =============================================================================
+ * Coupled CC Coordination Layer
+ * =============================================================================
+ *
+ * These functions integrate coupled CC algorithms (OLIA/LIA/BALIA) with
+ * the per-path CC framework. Coupled CC ensures TCP-fairness at shared
+ * bottlenecks while allowing full bandwidth utilization.
+ *
+ * Per RESEARCH.md: "OLIA as default" coupled algorithm.
+ * Per CONTEXT.md: "Coupled CC is opt-in via sysctl/sockopt".
+ */
+
+/*
+ * tquic_cong_enable_coupling - Enable coupled CC for a connection
+ * @conn: Connection to enable coupling on
+ * @algo: Coupled algorithm (TQUIC_COUPLED_OLIA, LIA, or BALIA)
+ *
+ * Creates coupled CC state and attaches all existing paths.
+ * New paths added after this call are automatically attached.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int tquic_cong_enable_coupling(struct tquic_connection *conn,
+			       enum tquic_coupled_algo algo);
+
+/*
+ * tquic_cong_disable_coupling - Disable coupled CC for a connection
+ * @conn: Connection to disable coupling on
+ *
+ * Detaches all paths and destroys coupled state.
+ * Paths continue using their individual CC algorithms.
+ */
+void tquic_cong_disable_coupling(struct tquic_connection *conn);
+
+/*
+ * tquic_cong_is_coupling_enabled - Check if coupled CC is enabled
+ * @conn: Connection to check
+ *
+ * Return: true if coupled CC is active, false otherwise
+ */
+bool tquic_cong_is_coupling_enabled(struct tquic_connection *conn);
+
+/*
+ * tquic_cong_on_ecn - Dispatch ECN CE event to path's CC algorithm
+ * @path: Path that received ECN CE marking
+ * @ecn_ce_count: Number of ECN CE marks reported in ACK
+ *
+ * Called when ACK frame reports increased ECN CE count.
+ * Per CONTEXT.md: "ECN support: available but off by default".
+ */
+void tquic_cong_on_ecn(struct tquic_path *path, u64 ecn_ce_count);
+
 #endif /* _TQUIC_CONG_H */

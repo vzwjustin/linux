@@ -15,9 +15,16 @@
 struct tquic_mib;
 struct tquic_error_ring;
 struct tquic_sched_ops;
+struct tquic_cong_ops;
 
 /* Scheduler name buffer size (matches TQUIC_SCHED_NAME_MAX) */
 #define NETNS_TQUIC_SCHED_NAME_MAX	16
+
+/* Congestion control name buffer size (matches TQUIC_CC_NAME_MAX) */
+#define NETNS_TQUIC_CC_NAME_MAX		16
+
+/* Default BBR auto-selection threshold (100ms) */
+#define NETNS_TQUIC_BBR_RTT_THRESHOLD_MS	100
 
 /**
  * struct netns_tquic - Per-network-namespace TQUIC state
@@ -25,6 +32,11 @@ struct tquic_sched_ops;
  * @error_ring: Pointer to error ring buffer for debugging
  * @default_scheduler: RCU-protected pointer to default scheduler ops
  * @sched_name: Buffer for sysctl scheduler name (net.tquic.scheduler)
+ * @default_cong: RCU-protected pointer to default CC algorithm ops
+ * @cc_name: Buffer for sysctl CC algorithm name (net.tquic.cc_algorithm)
+ * @bbr_rtt_threshold_ms: RTT threshold for BBR auto-selection (default 100ms)
+ * @coupled_enabled: Enable coupled CC for multipath fairness (default false)
+ * @ecn_enabled: Enable ECN for congestion signals (default false)
  *
  * This structure is embedded in struct net (via net->tquic).
  * It holds namespace-specific state that needs to be isolated
@@ -39,6 +51,10 @@ struct tquic_sched_ops;
  * The default_scheduler and sched_name fields support per-netns
  * scheduler configuration. Containers can have different default
  * schedulers via sysctl net.tquic.scheduler.
+ *
+ * The default_cong and cc_name fields support per-netns congestion
+ * control configuration. Different paths can use different CC
+ * algorithms, with BBR auto-selected for high-RTT paths.
  */
 struct netns_tquic {
 	struct tquic_mib __percpu *mib;
@@ -49,6 +65,21 @@ struct netns_tquic {
 
 	/* Sysctl buffer for scheduler name */
 	char sched_name[NETNS_TQUIC_SCHED_NAME_MAX];
+
+	/* Per-netns default congestion control (RCU protected) */
+	struct tquic_cong_ops __rcu *default_cong;
+
+	/* Sysctl buffer for CC algorithm name */
+	char cc_name[NETNS_TQUIC_CC_NAME_MAX];
+
+	/* BBR auto-selection: paths with RTT >= threshold use BBR */
+	u32 bbr_rtt_threshold_ms;
+
+	/* Coupled CC for multipath fairness (OLIA/LIA/BALIA) */
+	bool coupled_enabled;
+
+	/* ECN support for congestion signaling */
+	bool ecn_enabled;
 };
 
 #endif /* _NET_NETNS_TQUIC_H */

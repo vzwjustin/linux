@@ -24,6 +24,8 @@
 #include <linux/rcupdate.h>
 #include <linux/jhash.h>
 #include <net/tquic.h>
+#include <net/net_namespace.h>
+#include <net/netns/tquic.h>
 #include "tquic_cong.h"
 
 /*
@@ -408,6 +410,142 @@ void tquic_cong_on_packet_sent(struct tquic_path *path, u64 bytes,
 		ca->on_packet_sent(path->cong, bytes, sent_time);
 }
 EXPORT_SYMBOL_GPL(tquic_cong_on_packet_sent);
+
+/*
+ * =============================================================================
+ * Per-Network Namespace CC Configuration
+ * =============================================================================
+ */
+
+/*
+ * tquic_cong_set_default - Set default CC algorithm for a network namespace
+ * @net: Network namespace
+ * @name: CC algorithm name
+ *
+ * Return: 0 on success, -ENOENT if algorithm not found, -EBUSY if module fails
+ */
+int tquic_cong_set_default(struct net *net, const char *name)
+{
+	struct tquic_cong_ops *ca, *old_ca;
+
+	if (!net || !name)
+		return -EINVAL;
+
+	/* Find and get reference to the CC algorithm */
+	ca = tquic_cong_find(name);
+	if (!ca) {
+		/* Try to load the module */
+		request_module("tquic-cong-%s", name);
+		ca = tquic_cong_find(name);
+		if (!ca) {
+			pr_warn("tquic_cong: algorithm '%s' not found\n", name);
+			return -ENOENT;
+		}
+	}
+
+	/* Store name in netns buffer */
+	strscpy(net->tquic.cc_name, name, NETNS_TQUIC_CC_NAME_MAX);
+
+	/* Swap default CC algorithm (RCU protected) */
+	spin_lock(&tquic_cong_list_lock);
+	old_ca = rcu_dereference_protected(net->tquic.default_cong,
+					   lockdep_is_held(&tquic_cong_list_lock));
+	rcu_assign_pointer(net->tquic.default_cong, ca);
+	spin_unlock(&tquic_cong_list_lock);
+
+	/* Release old CC algorithm's module reference */
+	if (old_ca && old_ca->owner)
+		module_put(old_ca->owner);
+
+	pr_debug("tquic_cong: netns default CC set to '%s'\n", name);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_cong_set_default);
+
+/*
+ * tquic_cong_get_default - Get default CC algorithm for a network namespace
+ * @net: Network namespace
+ *
+ * Return: Pointer to default CC ops, or NULL if none set
+ */
+struct tquic_cong_ops *tquic_cong_get_default(struct net *net)
+{
+	if (!net)
+		return NULL;
+
+	return rcu_dereference(net->tquic.default_cong);
+}
+EXPORT_SYMBOL_GPL(tquic_cong_get_default);
+
+/*
+ * tquic_cong_get_default_name - Get default CC algorithm name for a netns
+ * @net: Network namespace
+ *
+ * Return: CC algorithm name string, or "cubic" as fallback
+ */
+const char *tquic_cong_get_default_name(struct net *net)
+{
+	struct tquic_cong_ops *ca;
+	const char *name;
+
+	if (!net)
+		return TQUIC_DEFAULT_CC_NAME;
+
+	rcu_read_lock();
+	ca = rcu_dereference(net->tquic.default_cong);
+	if (ca)
+		name = ca->name;
+	else if (net->tquic.cc_name[0])
+		name = net->tquic.cc_name;
+	else
+		name = TQUIC_DEFAULT_CC_NAME;
+	rcu_read_unlock();
+
+	return name;
+}
+EXPORT_SYMBOL_GPL(tquic_cong_get_default_name);
+
+/*
+ * tquic_cong_is_bbr_preferred - Check if BBR should be used for RTT
+ * @net: Network namespace
+ * @rtt_us: Path RTT in microseconds
+ *
+ * Return: true if RTT exceeds the BBR auto-selection threshold
+ */
+bool tquic_cong_is_bbr_preferred(struct net *net, u64 rtt_us)
+{
+	u32 threshold_us;
+
+	if (!net)
+		return false;
+
+	/* Convert threshold from ms to us */
+	threshold_us = net->tquic.bbr_rtt_threshold_ms * 1000;
+
+	/* BBR is preferred for high-RTT paths */
+	return rtt_us >= threshold_us;
+}
+EXPORT_SYMBOL_GPL(tquic_cong_is_bbr_preferred);
+
+/*
+ * tquic_cong_select_for_rtt - Select CC algorithm based on RTT
+ * @net: Network namespace for configuration
+ * @rtt_us: Path RTT in microseconds
+ *
+ * Return: CC algorithm name to use for this path
+ */
+const char *tquic_cong_select_for_rtt(struct net *net, u64 rtt_us)
+{
+	/* If BBR is preferred for high RTT and threshold is set */
+	if (net && net->tquic.bbr_rtt_threshold_ms > 0 &&
+	    tquic_cong_is_bbr_preferred(net, rtt_us)) {
+		return "bbr";
+	}
+
+	/* Otherwise use the per-netns default */
+	return tquic_cong_get_default_name(net);
+}
+EXPORT_SYMBOL_GPL(tquic_cong_select_for_rtt);
 
 MODULE_DESCRIPTION("TQUIC Congestion Control Framework");
 MODULE_LICENSE("GPL");
