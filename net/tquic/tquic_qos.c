@@ -360,22 +360,13 @@ void __exit tquic_qos_exit(void)
 
 /*
  * =============================================================================
- * HELPER STUBS FOR TUNNEL ACCESS
+ * EXTERNAL TUNNEL ACCESSORS
  * =============================================================================
  *
- * These provide type-safe access to tunnel fields from QoS code
- * without requiring full tunnel structure definition.
+ * These functions are implemented in tquic_tunnel.c and provide
+ * type-safe access to tunnel fields.
  */
 
-/* Tunnel traffic class accessor - defined here, actual impl in tunnel.c */
-__weak u8 tquic_tunnel_get_traffic_class(struct tquic_tunnel *tunnel)
-{
-	/* Stub returns bulk class by default */
-	return 2;
-}
-
-__weak __be16 tquic_tunnel_get_dest_port(struct tquic_tunnel *tunnel)
-{
-	/* Stub returns 0 */
-	return 0;
-}
+/* Declarations for tunnel accessors (implemented in tquic_tunnel.c) */
+extern u8 tquic_tunnel_get_traffic_class(struct tquic_tunnel *tunnel);
+extern __be16 tquic_tunnel_get_dest_port(struct tquic_tunnel *tunnel);

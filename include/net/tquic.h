@@ -1568,6 +1568,18 @@ void tquic_tunnel_established(struct tquic_tunnel *tunnel);
 /* ICMP passthrough */
 int tquic_tunnel_icmp_forward(struct tquic_tunnel *tunnel,
 			      struct sk_buff *skb, int direction);
+int tquic_tunnel_handle_icmp_error(struct tquic_tunnel *tunnel,
+				   u8 type, u8 code, u32 info);
+
+/* Tunnel accessor functions */
+u8 tquic_tunnel_get_traffic_class(struct tquic_tunnel *tunnel);
+__be16 tquic_tunnel_get_dest_port(struct tquic_tunnel *tunnel);
+int tquic_tunnel_get_dest_addr(struct tquic_tunnel *tunnel,
+			       struct sockaddr_storage *addr);
+int tquic_tunnel_get_stats(struct tquic_tunnel *tunnel,
+			   u64 *bytes_tx, u64 *bytes_rx,
+			   u64 *packets_tx, u64 *packets_rx);
+bool tquic_tunnel_is_tproxy(struct tquic_tunnel *tunnel);
 
 /* Tunnel subsystem init/exit */
 int __init tquic_tunnel_init(void);
