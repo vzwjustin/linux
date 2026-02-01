@@ -372,8 +372,56 @@ int tquic_server_handshake(struct sock *listener_sk,
 			   struct sk_buff *initial_pkt,
 			   struct sockaddr_storage *client_addr);
 
+/* Server PSK callback for TLS layer (tquic_handshake.c) */
+int tquic_server_psk_callback(struct sock *sk, const char *identity,
+			      size_t identity_len, u8 *psk);
+
+/* Server PSK handshake with rate limiting (tquic_handshake.c) */
+int tquic_server_hello_psk(struct sock *sk, struct sk_buff *initial_pkt,
+			   struct sockaddr_storage *client_addr);
+
 /* Crypto state installation after handshake (tquic_handshake.c) */
 void tquic_install_crypto_state(struct sock *sk);
+
+/*
+ * =============================================================================
+ * SERVER MULTI-TENANT CLIENT MANAGEMENT
+ * =============================================================================
+ *
+ * These functions manage per-client (router) state for multi-tenant VPS.
+ */
+
+/* Forward declaration */
+struct tquic_client;
+
+/* Client lookup by PSK identity (tquic_server.c) */
+struct tquic_client *tquic_client_lookup_by_psk(const char *identity,
+						size_t identity_len);
+
+/* Rate limit check (tquic_server.c) */
+bool tquic_client_rate_limit_check(struct tquic_client *client);
+
+/* Client registration (tquic_server.c) */
+int tquic_client_register(const char *identity, size_t identity_len,
+			  const u8 *psk);
+int tquic_client_unregister(const char *identity, size_t identity_len);
+
+/* Connection-client binding (tquic_server.c) */
+int tquic_server_bind_client(struct tquic_connection *conn,
+			     struct tquic_client *client);
+void tquic_server_unbind_client(struct tquic_connection *conn);
+
+/* PSK retrieval (tquic_server.c) */
+int tquic_server_get_client_psk(const char *identity, size_t identity_len,
+				u8 *psk);
+
+/* Server accept (tquic_server.c) */
+int tquic_server_accept(struct sock *sk, struct sk_buff *skb,
+			struct sockaddr_storage *client_addr);
+
+/* Server subsystem init/exit (tquic_server.c) */
+int __init tquic_server_init(void);
+void __exit tquic_server_exit(void);
 
 /*
  * =============================================================================

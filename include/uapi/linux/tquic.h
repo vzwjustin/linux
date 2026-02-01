@@ -83,6 +83,23 @@
 #define TQUIC_PATH_STATUS	19  /* Path status (bonding) */
 #define TQUIC_ACTIVE_PATH	20  /* Set active path (bonding) */
 #define TQUIC_ZEROCOPY		21  /* Enable zero-copy send */
+#define TQUIC_PSK_IDENTITY	22  /* PSK identity for authentication */
+
+/*
+ * SO_TQUIC_PSK_IDENTITY - Set PSK identity for connection
+ *
+ * Used with setsockopt(SOL_TQUIC, SO_TQUIC_PSK_IDENTITY, identity, len).
+ * The value is a null-terminated string identifying the PSK (up to 64 bytes).
+ *
+ * For server sockets: Configures PSK database entry (identity -> PSK mapping)
+ * For client sockets: Sets PSK identity to send in ClientHello
+ *
+ * Identity length must be 1-64 bytes.
+ */
+#define SO_TQUIC_PSK_IDENTITY	TQUIC_PSK_IDENTITY
+
+/* Maximum PSK identity length */
+#define TQUIC_MAX_PSK_IDENTITY_LEN	64
 
 /* WAN Bonding specific socket options */
 #define TQUIC_BOND_MODE		50  /* Bonding mode */

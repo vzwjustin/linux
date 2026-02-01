@@ -469,6 +469,15 @@ struct tquic_sock {
 	 * If "auto", RTT-based auto-selection is enabled.
 	 */
 	char requested_congestion[TQUIC_MAX_CONG_NAME];
+
+	/*
+	 * PSK identity for authentication (set via SO_TQUIC_PSK_IDENTITY)
+	 *
+	 * For client: Identity to send in ClientHello
+	 * For server: Not used (server uses tquic_client_register)
+	 */
+	char psk_identity[64];
+	u8 psk_identity_len;
 };
 
 static inline struct tquic_sock *tquic_sk(struct sock *sk)
@@ -1530,5 +1539,66 @@ static inline sa_family_t tquic_path_effective_family(const struct tquic_path *p
 }
 
 #endif /* CONFIG_IPV6 */
+
+/*
+ * =============================================================================
+ * TCP-over-QUIC Tunnel Termination (VPS Endpoint)
+ * =============================================================================
+ *
+ * These functions implement VPS-side tunnel termination for TCP-over-QUIC.
+ * The VPS receives encapsulated TCP from routers and forwards to internet.
+ */
+
+/* Forward declarations for tunnel types */
+struct tquic_tunnel;
+struct tquic_client;
+
+/* Tunnel lifecycle */
+struct tquic_tunnel *tquic_tunnel_create(struct tquic_client *client,
+					 struct tquic_stream *stream,
+					 const u8 *header_data,
+					 size_t header_len);
+struct tquic_tunnel *tquic_tunnel_create_tproxy(struct tquic_client *client,
+						struct tquic_stream *stream,
+						const u8 *header_data,
+						size_t header_len);
+void tquic_tunnel_close(struct tquic_tunnel *tunnel);
+void tquic_tunnel_established(struct tquic_tunnel *tunnel);
+
+/* ICMP passthrough */
+int tquic_tunnel_icmp_forward(struct tquic_tunnel *tunnel,
+			      struct sk_buff *skb, int direction);
+
+/* Tunnel subsystem init/exit */
+int __init tquic_tunnel_init(void);
+void __exit tquic_tunnel_exit(void);
+
+/*
+ * =============================================================================
+ * QoS Traffic Classification
+ * =============================================================================
+ *
+ * Traffic classification for tc HTB scheduling and DSCP marking.
+ */
+
+/* Traffic class constants */
+#define TQUIC_TC_REALTIME	0
+#define TQUIC_TC_INTERACTIVE	1
+#define TQUIC_TC_BULK		2
+#define TQUIC_TC_BACKGROUND	3
+
+/* QoS classification */
+int tquic_qos_classify(void *tunnel_ptr, u8 router_hint);
+void tquic_qos_mark_skb(struct sk_buff *skb, void *tunnel_ptr);
+u8 tquic_qos_get_dscp(u8 traffic_class);
+u32 tquic_qos_get_priority(u8 traffic_class);
+
+/* QoS statistics */
+void tquic_qos_update_stats(u8 traffic_class, u64 bytes);
+void tquic_qos_get_stats(u8 traffic_class, u64 *packets, u64 *bytes, u64 *drops);
+
+/* QoS subsystem init/exit */
+int __init tquic_qos_init(void);
+void __exit tquic_qos_exit(void);
 
 #endif /* _NET_TQUIC_H */

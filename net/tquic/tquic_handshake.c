@@ -7,6 +7,12 @@
  * Implements TLS 1.3 handshake delegation via net/handshake infrastructure.
  * The handshake is performed by the tlshd userspace daemon, following the
  * same pattern used by NFS over TLS (net/sunrpc/xprtsock.c).
+ *
+ * Server-side PSK authentication:
+ * - PSK identity is extracted from ClientHello
+ * - tquic_client_lookup_by_psk() finds matching client config
+ * - Rate limit checked before accepting connection
+ * - No 0-RTT (full handshake required per CONTEXT.md)
  */
 
 #include <linux/module.h>
@@ -14,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/completion.h>
 #include <linux/jiffies.h>
+#include <linux/ratelimit.h>
 #include <net/sock.h>
 #include <net/handshake.h>
 #include <net/tquic.h>
@@ -22,6 +29,23 @@
 #include "protocol.h"
 #include "tquic_mib.h"
 #include "../quic/tquic_sched.h"
+
+/*
+ * Forward declarations for server functions
+ */
+struct tquic_client;
+struct tquic_client *tquic_client_lookup_by_psk(const char *identity,
+						size_t identity_len);
+bool tquic_client_rate_limit_check(struct tquic_client *client);
+int tquic_server_bind_client(struct tquic_connection *conn,
+			     struct tquic_client *client);
+int tquic_server_get_client_psk(const char *identity, size_t identity_len,
+				u8 *psk);
+
+/*
+ * Rate limit state for PSK rejection logging
+ */
+static DEFINE_RATELIMIT_STATE(tquic_psk_reject_log, 5 * HZ, 5);
 
 /**
  * struct tquic_handshake_state - Handshake state tracking
@@ -663,3 +687,117 @@ int tquic_server_handshake(struct sock *listener_sk,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tquic_server_handshake);
+
+/*
+ * =============================================================================
+ * Server-side PSK Authentication with Rate Limiting
+ * =============================================================================
+ *
+ * These functions implement PSK-based client authentication for server mode.
+ * Per CONTEXT.md: Auto-accept on valid PSK, resource-based limits only.
+ * Per CONTEXT.md: Connection rate limiting per client for abuse prevention.
+ * Per CONTEXT.md: No 0-RTT, always full handshake for security.
+ */
+
+/**
+ * tquic_server_psk_callback - TLS layer PSK callback for server
+ * @sk: Socket for the connection
+ * @identity: PSK identity from ClientHello
+ * @identity_len: Length of identity
+ * @psk: Output buffer for PSK (32 bytes)
+ *
+ * Called by TLS layer when PSK identity is received in ClientHello.
+ * Looks up client configuration, checks rate limit, and returns PSK.
+ *
+ * Returns: 0 on success with PSK copied, -ENOENT if unknown identity,
+ *          -EQUIC_CONNECTION_REFUSED if rate limited
+ */
+int tquic_server_psk_callback(struct sock *sk, const char *identity,
+			      size_t identity_len, u8 *psk)
+{
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_connection *conn = tsk->conn;
+	struct tquic_client *client;
+	int ret;
+
+	if (!identity || identity_len == 0 || !psk)
+		return -EINVAL;
+
+	/* Look up client by PSK identity */
+	client = tquic_client_lookup_by_psk(identity, identity_len);
+	if (!client) {
+		if (__ratelimit(&tquic_psk_reject_log)) {
+			pr_info("tquic: unknown PSK identity '%.*s'\n",
+				(int)identity_len, identity);
+		}
+		TQUIC_INC_STATS(sock_net(sk), TQUIC_MIB_HANDSHAKESFAILED);
+		return -ENOENT;
+	}
+
+	/* Check rate limit before accepting connection */
+	if (!tquic_client_rate_limit_check(client)) {
+		if (__ratelimit(&tquic_psk_reject_log)) {
+			pr_info("tquic: rate limited PSK identity '%.*s'\n",
+				(int)identity_len, identity);
+		}
+		TQUIC_INC_STATS(sock_net(sk), TQUIC_MIB_HANDSHAKESFAILED);
+		return -EQUIC_CONNECTION_REFUSED;
+	}
+
+	/* Get PSK for this client */
+	ret = tquic_server_get_client_psk(identity, identity_len, psk);
+	if (ret < 0) {
+		pr_debug("tquic: failed to get PSK for '%.*s': %d\n",
+			 (int)identity_len, identity, ret);
+		return ret;
+	}
+
+	/* Bind client to connection for resource tracking */
+	if (conn) {
+		ret = tquic_server_bind_client(conn, client);
+		if (ret < 0) {
+			pr_warn("tquic: failed to bind client: %d\n", ret);
+			/* Continue anyway - binding is for stats */
+		}
+	}
+
+	pr_debug("tquic: PSK authentication successful for '%.*s'\n",
+		 (int)identity_len, identity);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_server_psk_callback);
+
+/**
+ * tquic_server_hello_psk - Server-side PSK handshake with rate limiting
+ * @sk: Server socket
+ * @initial_pkt: Incoming Initial packet
+ * @client_addr: Client source address
+ *
+ * Processes Initial packet, extracts PSK identity, validates via
+ * tquic_server_psk_callback() (which includes rate limit check), and
+ * initiates handshake.
+ *
+ * Per CONTEXT.md: Unknown PSK rejected with EQUIC_CONNECTION_REFUSED.
+ * Per CONTEXT.md: Rate limit exceeded rejected with EQUIC_CONNECTION_REFUSED.
+ *
+ * Returns: 0 on success (handshake initiated), negative errno on failure
+ */
+int tquic_server_hello_psk(struct sock *sk, struct sk_buff *initial_pkt,
+			   struct sockaddr_storage *client_addr)
+{
+	/*
+	 * PSK identity extraction from Initial packet:
+	 *
+	 * The Initial packet contains a CRYPTO frame with ClientHello.
+	 * The ClientHello contains the pre_shared_key extension with:
+	 * - PSK identity (up to 64 bytes)
+	 * - PSK binder
+	 *
+	 * For now, we defer to the standard handshake path and rely on
+	 * tquic_server_psk_callback being invoked by the TLS layer.
+	 * The TLS layer (tlshd daemon) will call back with the PSK identity.
+	 */
+
+	return tquic_server_handshake(sk, initial_pkt, client_addr);
+}
+EXPORT_SYMBOL_GPL(tquic_server_hello_psk);

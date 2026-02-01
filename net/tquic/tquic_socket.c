@@ -887,6 +887,33 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 		return ret;
 	}
 
+	case TQUIC_PSK_IDENTITY: {
+		/*
+		 * SO_TQUIC_PSK_IDENTITY: Set PSK identity for connection
+		 *
+		 * For client sockets: Sets identity to send in ClientHello
+		 * For server sockets: Store identity for later use
+		 *
+		 * Must be set before connect().
+		 */
+		char identity[64];
+
+		if (optlen < 1 || optlen > 64)
+			return -EINVAL;
+
+		if (copy_from_sockptr(identity, optval, optlen))
+			return -EFAULT;
+
+		lock_sock(sk);
+		/* Store PSK identity in socket */
+		memcpy(tsk->psk_identity, identity, optlen);
+		tsk->psk_identity_len = optlen;
+		release_sock(sk);
+
+		pr_debug("tquic: PSK identity set (%d bytes)\n", optlen);
+		return 0;
+	}
+
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -1074,6 +1101,36 @@ static int tquic_getsockopt(struct socket *sock, int level, int optname,
 		 */
 		val = tsk->pacing_enabled ? 1 : 0;
 		break;
+
+	case TQUIC_PSK_IDENTITY: {
+		/*
+		 * SO_TQUIC_PSK_IDENTITY: Get current PSK identity
+		 */
+		int identity_len;
+
+		lock_sock(sk);
+		identity_len = tsk->psk_identity_len;
+		if (identity_len == 0) {
+			release_sock(sk);
+			return -ENOENT;
+		}
+
+		if (len < identity_len) {
+			release_sock(sk);
+			return -EINVAL;
+		}
+
+		if (copy_to_user(optval, tsk->psk_identity, identity_len)) {
+			release_sock(sk);
+			return -EFAULT;
+		}
+		release_sock(sk);
+
+		if (put_user(identity_len, optlen))
+			return -EFAULT;
+
+		return 0;
+	}
 
 	default:
 		return -ENOPROTOOPT;
