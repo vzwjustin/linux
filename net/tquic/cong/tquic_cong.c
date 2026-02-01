@@ -28,6 +28,9 @@
 #include <net/netns/tquic.h>
 #include "tquic_cong.h"
 
+/* Forward declaration for pacing update (defined in tquic_output.c) */
+extern void tquic_update_pacing(struct sock *sk, struct tquic_path *path);
+
 /*
  * Global CC algorithm registry
  * Protected by tquic_cong_list_lock for modifications,
@@ -40,6 +43,50 @@ static LIST_HEAD(tquic_cong_list);
  * Default initial cwnd when no CC algorithm is available
  */
 #define TQUIC_DEFAULT_CWND	(10 * 1200)	/* 10 packets */
+
+/*
+ * =============================================================================
+ * Path Degradation on Consecutive Losses
+ * =============================================================================
+ *
+ * Per RESEARCH.md: "5 consecutive lost packets in same round" triggers
+ * path degradation. This implements loss tracking per path and signals
+ * the bonding layer when the threshold is exceeded.
+ */
+
+/* Default threshold - 5 consecutive losses per RESEARCH.md */
+#define TQUIC_PATH_DEGRADE_LOSS_THRESHOLD_DEFAULT	5
+
+/*
+ * Per-path loss tracking state
+ *
+ * This tracks consecutive losses within a "round" to detect path degradation.
+ * A round is defined as the time for one cwnd of data to be acknowledged.
+ */
+struct tquic_loss_tracker {
+	u32 consecutive_losses;   /* Consecutive lost packets in current round */
+	u64 round_start_tx;       /* tx_packets at round start */
+	u64 last_loss_tx;         /* tx_packets at last loss */
+};
+
+/* Per-path loss trackers (indexed by path_id, limited to TQUIC_MAX_PATHS) */
+static struct tquic_loss_tracker loss_trackers[TQUIC_MAX_PATHS];
+
+/*
+ * Get threshold from netns or use default
+ */
+static int tquic_get_path_degrade_threshold(struct tquic_path *path)
+{
+	struct net *net = NULL;
+
+	if (path && path->conn && path->conn->sk)
+		net = sock_net(path->conn->sk);
+
+	if (net && net->tquic.path_degrade_threshold > 0)
+		return net->tquic.path_degrade_threshold;
+
+	return TQUIC_PATH_DEGRADE_LOSS_THRESHOLD_DEFAULT;
+}
 
 /*
  * tquic_register_cong - Register a CC algorithm
@@ -388,13 +435,27 @@ EXPORT_SYMBOL_GPL(tquic_cong_release_path);
  * @path: Path that received the ACK
  * @bytes_acked: Number of bytes acknowledged
  * @rtt_us: RTT sample in microseconds
+ *
+ * This also resets the consecutive loss counter since a successful
+ * ACK indicates the path is functioning.
  */
 void tquic_cong_on_ack(struct tquic_path *path, u64 bytes_acked, u64 rtt_us)
 {
 	struct tquic_cong_ops *ca;
+	struct tquic_loss_tracker *tracker;
 
 	if (!path)
 		return;
+
+	/* Reset consecutive loss counter on successful ACK */
+	if (path->path_id < TQUIC_MAX_PATHS) {
+		tracker = &loss_trackers[path->path_id];
+		if (tracker->consecutive_losses > 0) {
+			pr_debug("tquic: path %u loss counter reset on ACK\n",
+				 path->path_id);
+			tracker->consecutive_losses = 0;
+		}
+	}
 
 	ca = path->cong_ops;
 	if (ca && ca->on_ack && path->cong) {
@@ -404,6 +465,10 @@ void tquic_cong_on_ack(struct tquic_path *path, u64 bytes_acked, u64 rtt_us)
 		if (ca->get_cwnd)
 			path->stats.cwnd = ca->get_cwnd(path->cong);
 	}
+
+	/* Update pacing rate after CC state change */
+	if (path->conn && path->conn->sk)
+		tquic_update_pacing(path->conn->sk, path);
 }
 EXPORT_SYMBOL_GPL(tquic_cong_on_ack);
 
@@ -411,14 +476,66 @@ EXPORT_SYMBOL_GPL(tquic_cong_on_ack);
  * tquic_cong_on_loss - Dispatch loss event to path's CC algorithm
  * @path: Path that experienced loss
  * @bytes_lost: Number of bytes detected as lost
+ *
+ * This also tracks consecutive losses for path degradation detection.
+ * Per RESEARCH.md: "5 consecutive lost packets in same round" triggers
+ * path degradation and failover to other paths.
+ *
+ * A "round" is approximated by the number of packets that can fit in
+ * one cwnd. When tx_packets advances by cwnd/mss, we start a new round.
  */
 void tquic_cong_on_loss(struct tquic_path *path, u64 bytes_lost)
 {
 	struct tquic_cong_ops *ca;
+	struct tquic_loss_tracker *tracker;
+	int threshold;
+	u32 packets_per_cwnd;
 
 	if (!path)
 		return;
 
+	/* Track consecutive losses for path degradation */
+	if (path->path_id < TQUIC_MAX_PATHS) {
+		tracker = &loss_trackers[path->path_id];
+
+		/* Calculate packets per cwnd (for round detection) */
+		packets_per_cwnd = (path->stats.cwnd ?: TQUIC_DEFAULT_CWND) / 1200;
+		if (packets_per_cwnd == 0)
+			packets_per_cwnd = 10;
+
+		/* Check if this is in the same round */
+		if (path->stats.tx_packets > tracker->round_start_tx + packets_per_cwnd) {
+			/* New round - reset counter */
+			tracker->consecutive_losses = 0;
+			tracker->round_start_tx = path->stats.tx_packets;
+			pr_debug("tquic: path %u new loss round, tx=%llu\n",
+				 path->path_id, path->stats.tx_packets);
+		}
+
+		/* Count this loss */
+		tracker->consecutive_losses++;
+		tracker->last_loss_tx = path->stats.tx_packets;
+
+		pr_debug("tquic: loss on path %u, consecutive=%u (round_start=%llu)\n",
+			 path->path_id, tracker->consecutive_losses,
+			 tracker->round_start_tx);
+
+		/* Check for degradation threshold */
+		threshold = tquic_get_path_degrade_threshold(path);
+		if (tracker->consecutive_losses >= threshold) {
+			pr_warn("tquic: path %u degraded after %u consecutive losses\n",
+				path->path_id, tracker->consecutive_losses);
+
+			/* Signal path manager for degradation/failover */
+			if (path->conn)
+				tquic_bond_path_failed(path->conn, path);
+
+			/* Reset counter after degradation */
+			tracker->consecutive_losses = 0;
+		}
+	}
+
+	/* Call CC's on_loss */
 	ca = path->cong_ops;
 	if (ca && ca->on_loss && path->cong) {
 		ca->on_loss(path->cong, bytes_lost);
