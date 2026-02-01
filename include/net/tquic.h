@@ -441,6 +441,18 @@ struct tquic_sock {
 	 * If empty, the per-netns default is used.
 	 */
 	char requested_scheduler[TQUIC_MAX_SCHED_NAME];
+
+	/*
+	 * Congestion control preference (set via SO_TQUIC_CONGESTION before connect)
+	 *
+	 * Per CONTEXT.md: Different paths can use different CC algorithms.
+	 * This field stores the user's preference until connection is established.
+	 * Individual paths may auto-select BBR based on RTT threshold.
+	 *
+	 * If empty, the per-netns default is used.
+	 * If "auto", RTT-based auto-selection is enabled.
+	 */
+	char requested_congestion[TQUIC_MAX_CONG_NAME];
 };
 
 static inline struct tquic_sock *tquic_sk(struct sock *sk)

@@ -63,6 +63,13 @@ enum linux_tquic_mib_field {
 	TQUIC_MIB_STREAMSCLOSED,         /* Streams closed */
 	TQUIC_MIB_STREAMBLOCKED,         /* Stream limit blocked */
 
+	/* ECN counters - per CONTEXT.md: "ECN support: available but off by default" */
+	TQUIC_MIB_ECNACKSRX,             /* ACK_ECN frames received */
+	TQUIC_MIB_ECNACKSTX,             /* ACK_ECN frames transmitted */
+	TQUIC_MIB_ECNCEMARKSRX,          /* ECN CE marks received (congestion signals) */
+	TQUIC_MIB_ECNECT0RX,             /* ECT(0) marks received */
+	TQUIC_MIB_ECNECT1RX,             /* ECT(1) marks received */
+
 	/*
 	 * Per-EQUIC error counters (EQUIC_BASE=500)
 	 * Maps to RFC 9000 QUIC Transport Error Codes

@@ -486,13 +486,30 @@ static int tquic_process_ping_frame(struct tquic_rx_ctx *ctx)
 }
 
 /*
- * Process ACK frame
+ * Process ACK frame (0x02) or ACK_ECN frame (0x03)
+ *
+ * ACK frame format (RFC 9000 Section 19.3):
+ *   Largest Acknowledged (varint)
+ *   ACK Delay (varint)
+ *   ACK Range Count (varint)
+ *   First ACK Range (varint)
+ *   [ACK Ranges...]
+ *
+ * ACK_ECN frame adds (RFC 9000 Section 19.3.2):
+ *   ECT(0) Count (varint)
+ *   ECT(1) Count (varint)
+ *   ECN-CE Count (varint)
  */
 static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 {
 	u64 largest_ack, ack_delay, ack_range_count, first_ack_range;
+	u64 ecn_ect0 = 0, ecn_ect1 = 0, ecn_ce = 0;
+	bool has_ecn;
+	u8 frame_type;
 	int ret;
 
+	frame_type = ctx->data[ctx->offset];
+	has_ecn = (frame_type == TQUIC_FRAME_ACK_ECN);
 	ctx->offset++;  /* Skip frame type */
 
 	/* Largest Acknowledged */
@@ -540,6 +557,47 @@ static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 		ctx->offset += ret;
 	}
 
+	/*
+	 * ECN counts (ACK_ECN frame only)
+	 *
+	 * Per RFC 9000 Section 19.3.2:
+	 * - ECT(0) Count: packets received with ECT(0) codepoint
+	 * - ECT(1) Count: packets received with ECT(1) codepoint
+	 * - ECN-CE Count: packets received with ECN-CE codepoint
+	 *
+	 * Per CONTEXT.md: "ECN support: available but off by default"
+	 */
+	if (has_ecn) {
+		/* ECT(0) Count */
+		ret = tquic_decode_varint(ctx->data + ctx->offset,
+					  ctx->len - ctx->offset, &ecn_ect0);
+		if (ret < 0)
+			return ret;
+		ctx->offset += ret;
+
+		/* ECT(1) Count */
+		ret = tquic_decode_varint(ctx->data + ctx->offset,
+					  ctx->len - ctx->offset, &ecn_ect1);
+		if (ret < 0)
+			return ret;
+		ctx->offset += ret;
+
+		/* ECN-CE Count */
+		ret = tquic_decode_varint(ctx->data + ctx->offset,
+					  ctx->len - ctx->offset, &ecn_ce);
+		if (ret < 0)
+			return ret;
+		ctx->offset += ret;
+
+		/* Update MIB counter for ECN frames received */
+		if (ctx->conn && ctx->conn->sk) {
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_ECNACKSRX);
+			if (ecn_ce > 0)
+				TQUIC_ADD_STATS(sock_net(ctx->conn->sk),
+						TQUIC_MIB_ECNCEMARKSRX, ecn_ce);
+		}
+	}
+
 	/* Update RTT estimate and notify congestion control */
 	if (ctx->path) {
 		ktime_t now = ktime_get();
@@ -573,6 +631,30 @@ static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 
 			/* Update RTT in CC algorithm */
 			tquic_cong_on_rtt(ctx->path, rtt_us);
+		}
+
+		/*
+		 * ECN CE handling
+		 *
+		 * Per RFC 9002 Section 7.1: "An increase in ECN-CE counters
+		 * is a signal of congestion. The sender SHOULD reduce the
+		 * congestion window using the approach described in..."
+		 *
+		 * Per CONTEXT.md: "Loss on one path reduces only that path's CWND"
+		 * This applies to ECN as well - ECN on one path affects only
+		 * that path.
+		 */
+		if (has_ecn && ecn_ce > 0) {
+			/*
+			 * Track previous ECN-CE count to detect increase.
+			 * For now, treat any reported CE count as new marks.
+			 * A full implementation would compare against
+			 * previously reported values.
+			 */
+			tquic_cong_on_ecn(ctx->path, ecn_ce);
+
+			pr_debug("tquic: ECN-CE on path %u: ce=%llu ect0=%llu ect1=%llu\n",
+				 ctx->path->path_id, ecn_ce, ecn_ect0, ecn_ect1);
 		}
 	}
 

@@ -178,6 +178,105 @@ static void tquic_cong_put(struct tquic_cong_ops *ca)
 }
 
 /*
+ * tquic_cong_init_path_with_rtt - Initialize CC state for a path with RTT auto-selection
+ * @path: Path to initialize CC for
+ * @net: Network namespace for per-netns defaults and BBR threshold
+ * @name: CC algorithm name (NULL for default, "auto" for RTT-based)
+ * @rtt_us: Initial RTT estimate in microseconds (for auto-selection)
+ *
+ * This function supports BBR auto-selection for high-RTT paths:
+ * - If name is "auto" and RTT >= bbr_rtt_threshold_ms, BBR is selected
+ * - If name is "auto" and RTT < threshold, per-netns default is used
+ * - If name is specified (not "auto"), that algorithm is used
+ * - If name is NULL, per-netns default is used
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int tquic_cong_init_path_with_rtt(struct tquic_path *path, struct net *net,
+				  const char *name, u64 rtt_us)
+{
+	struct tquic_cong_ops *ca;
+	void *cong_state;
+	const char *algo_name;
+	bool auto_select = false;
+
+	if (!path)
+		return -EINVAL;
+
+	/* Handle auto-selection mode */
+	if (name && strcmp(name, "auto") == 0) {
+		auto_select = true;
+		algo_name = tquic_cong_select_for_rtt(net, rtt_us);
+		pr_debug("tquic_cong: auto-selected '%s' for path %u (rtt=%llu us)\n",
+			 algo_name, path->path_id, rtt_us);
+	} else if (name) {
+		algo_name = name;
+	} else if (net) {
+		/* Use per-netns default */
+		algo_name = tquic_cong_get_default_name(net);
+	} else {
+		algo_name = TQUIC_DEFAULT_CC_NAME;
+	}
+
+	/* Find the CC algorithm */
+	ca = tquic_cong_find(algo_name);
+	if (!ca) {
+		/* Try to auto-load the module */
+		request_module("tquic-cong-%s", algo_name);
+		ca = tquic_cong_find(algo_name);
+	}
+
+	if (!ca) {
+		pr_warn("tquic_cong: algorithm '%s' not found, trying default\n",
+			algo_name);
+		/* Fall back to default */
+		if (strcmp(algo_name, TQUIC_DEFAULT_CC_NAME) != 0) {
+			ca = tquic_cong_find(TQUIC_DEFAULT_CC_NAME);
+			if (!ca) {
+				request_module("tquic-cong-%s",
+					       TQUIC_DEFAULT_CC_NAME);
+				ca = tquic_cong_find(TQUIC_DEFAULT_CC_NAME);
+			}
+		}
+	}
+
+	if (!ca) {
+		pr_warn("tquic_cong: no CC algorithm available for path %u\n",
+			path->path_id);
+		/* Initialize with default cwnd, no CC ops */
+		path->cong = NULL;
+		path->cong_ops = NULL;
+		path->stats.cwnd = TQUIC_DEFAULT_CWND;
+		return 0;  /* Not fatal - path can operate without CC */
+	}
+
+	/* Initialize per-path CC state */
+	cong_state = ca->init(path);
+	if (!cong_state) {
+		tquic_cong_put(ca);
+		pr_warn("tquic_cong: failed to init %s for path %u\n",
+			ca->name, path->path_id);
+		return -ENOMEM;
+	}
+
+	/* Store CC state and ops in path */
+	path->cong = cong_state;
+	path->cong_ops = ca;
+
+	/* Initialize cwnd from CC algorithm */
+	if (ca->get_cwnd)
+		path->stats.cwnd = ca->get_cwnd(cong_state);
+	else
+		path->stats.cwnd = TQUIC_DEFAULT_CWND;
+
+	pr_debug("tquic_cong: initialized %s for path %u (cwnd=%u, auto=%d)\n",
+		 ca->name, path->path_id, path->stats.cwnd, auto_select);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_cong_init_path_with_rtt);
+
+/*
  * tquic_cong_init_path - Initialize CC state for a path
  * @path: Path to initialize CC for
  * @name: CC algorithm name (NULL for default)

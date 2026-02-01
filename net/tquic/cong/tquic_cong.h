@@ -51,6 +51,26 @@ struct tquic_cong_ops *tquic_cong_find(const char *name);
 int tquic_cong_init_path(struct tquic_path *path, const char *name);
 
 /*
+ * tquic_cong_init_path_with_rtt - Initialize CC state for a path with RTT auto-selection
+ * @path: Path to initialize CC for
+ * @net: Network namespace for per-netns defaults and BBR threshold
+ * @name: CC algorithm name (NULL for default, "auto" for RTT-based)
+ * @rtt_us: Initial RTT estimate in microseconds (for auto-selection)
+ *
+ * This function supports BBR auto-selection for high-RTT paths:
+ * - If name is "auto" and RTT >= bbr_rtt_threshold_ms, BBR is selected
+ * - If name is "auto" and RTT < threshold, per-netns default is used
+ * - If name is specified (not "auto"), that algorithm is used
+ * - If name is NULL, per-netns default is used
+ *
+ * Per CONTEXT.md: "High-RTT paths (>=100ms) auto-select BBR when configured"
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int tquic_cong_init_path_with_rtt(struct tquic_path *path, struct net *net,
+				  const char *name, u64 rtt_us);
+
+/*
  * tquic_cong_release_path - Release CC state for a path
  * @path: Path whose CC state should be released
  *

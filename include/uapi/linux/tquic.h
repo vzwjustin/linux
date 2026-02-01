@@ -41,6 +41,23 @@
  * Available schedulers can be queried via /proc/net/tquic/schedulers.
  */
 #define SO_TQUIC_SCHEDULER	TQUIC_SCHEDULER
+
+/*
+ * SO_TQUIC_CONGESTION - Set congestion control algorithm before connect()
+ *
+ * Used with setsockopt(SOL_TQUIC, SO_TQUIC_CONGESTION, name, len).
+ * The value is a null-terminated string naming the CC algorithm.
+ *
+ * Per CONTEXT.md: Each path can use different CC algorithms.
+ * This sockopt sets the preferred CC for the connection; individual
+ * paths may use different algorithms based on RTT-based auto-selection:
+ *   - High-RTT paths (>= bbr_rtt_threshold_ms) auto-select BBR
+ *   - Other paths use this preference or the per-netns default
+ *
+ * Available algorithms: cubic (default), bbr, reno
+ * Set "auto" to enable automatic selection per path.
+ */
+#define SO_TQUIC_CONGESTION	TQUIC_CONGESTION
 #define TQUIC_IDLE_TIMEOUT	10  /* Idle timeout in ms */
 #define TQUIC_MAX_DATA		11  /* Maximum data per connection */
 #define TQUIC_MAX_STREAM_DATA	12  /* Maximum data per stream */

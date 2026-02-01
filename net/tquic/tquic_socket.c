@@ -22,6 +22,7 @@
 
 #include "protocol.h"
 #include "../quic/tquic_sched.h"
+#include "cong/tquic_cong.h"
 
 /*
  * Lockdep class keys for TQUIC sockets
@@ -143,6 +144,9 @@ static int tquic_init_sock(struct sock *sk)
 
 	/* Clear requested scheduler (will use per-netns default if not set) */
 	tsk->requested_scheduler[0] = '\0';
+
+	/* Clear requested congestion control (will use per-netns default if not set) */
+	tsk->requested_congestion[0] = '\0';
 
 	/* Create connection structure */
 	tsk->conn = tquic_conn_create(sk, GFP_KERNEL);
@@ -812,6 +816,55 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 		return ret;
 	}
 
+	case TQUIC_CONGESTION: {
+		/*
+		 * SO_TQUIC_CONGESTION: Set CC algorithm before connect()
+		 *
+		 * Per CONTEXT.md: Different paths can use different CC algorithms.
+		 * This sockopt sets the preferred CC for new paths on the connection.
+		 *
+		 * Special values:
+		 *   "auto" - Enable RTT-based auto-selection (BBR for high-RTT)
+		 *   Empty or default per-netns setting otherwise
+		 *
+		 * Unlike scheduler, CC can be set per-path dynamically, so
+		 * this preference is stored and used when paths are created.
+		 */
+		char name[TQUIC_MAX_CONG_NAME];
+		int ret = 0;
+
+		if (optlen < 1 || optlen >= TQUIC_MAX_CONG_NAME)
+			return -EINVAL;
+
+		if (copy_from_sockptr(name, optval, optlen))
+			return -EFAULT;
+		name[optlen] = '\0';
+
+		/* "auto" is a special value for RTT-based selection */
+		if (strcmp(name, "auto") != 0) {
+			/* Validate CC algorithm exists */
+			struct tquic_cong_ops *ca = tquic_cong_find(name);
+			if (!ca) {
+				pr_warn("tquic: unknown CC algorithm '%s'\n", name);
+				return -ENOENT;
+			}
+			/* Release module reference from find */
+			if (ca->owner)
+				module_put(ca->owner);
+		}
+
+		lock_sock(sk);
+		/*
+		 * Store preference - unlike scheduler, CC preference
+		 * can be set even on an established connection since
+		 * it affects new paths, not existing ones.
+		 */
+		strscpy(tsk->requested_congestion, name,
+			sizeof(tsk->requested_congestion));
+		release_sock(sk);
+		return ret;
+	}
+
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -941,6 +994,41 @@ static int tquic_getsockopt(struct socket *sock, int level, int optname,
 			name = tquic_sched_get_default(sock_net(sk));
 			if (!name)
 				name = "aggregate";
+		}
+		release_sock(sk);
+
+		name_len = strlen(name) + 1;
+		if (len < name_len)
+			return -EINVAL;
+
+		if (copy_to_user(optval, name, name_len))
+			return -EFAULT;
+		if (put_user(name_len, optlen))
+			return -EFAULT;
+
+		return 0;
+	}
+
+	case TQUIC_CONGESTION: {
+		/*
+		 * SO_TQUIC_CONGESTION: Get current CC algorithm preference
+		 *
+		 * Returns the requested CC algorithm for this socket, or the
+		 * per-netns default if none is set.
+		 *
+		 * Note: Individual paths may use different CC algorithms
+		 * based on RTT auto-selection. This returns the preference,
+		 * not necessarily what each path uses.
+		 */
+		const char *name;
+		int name_len;
+
+		lock_sock(sk);
+		if (tsk->requested_congestion[0]) {
+			name = tsk->requested_congestion;
+		} else {
+			/* Return per-netns default */
+			name = tquic_cong_get_default_name(sock_net(sk));
 		}
 		release_sock(sk);
 
