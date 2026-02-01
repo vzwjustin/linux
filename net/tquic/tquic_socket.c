@@ -266,6 +266,21 @@ int tquic_connect(struct sock *sk, struct sockaddr *addr, int addr_len)
 	if (ret < 0)
 		goto out_unlock;
 
+	/*
+	 * Initialize scheduler - use requested or per-netns default.
+	 * Per CONTEXT.md: "Scheduler locked at connection establishment"
+	 */
+	ret = tquic_sched_init_conn(conn,
+				    tsk->requested_scheduler[0] ?
+				    tsk->requested_scheduler : NULL);
+	if (ret < 0) {
+		pr_warn("tquic: scheduler init failed: %d, using default\n", ret);
+		/* Try with default scheduler */
+		ret = tquic_sched_init_conn(conn, NULL);
+		if (ret < 0)
+			goto out_unlock;
+	}
+
 	/* Set state before handshake */
 	inet_sk_set_state(sk, TCP_SYN_SENT);
 

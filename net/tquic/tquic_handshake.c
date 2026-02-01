@@ -21,6 +21,7 @@
 
 #include "protocol.h"
 #include "tquic_mib.h"
+#include "../quic/tquic_sched.h"
 
 /**
  * struct tquic_handshake_state - Handshake state tracking
@@ -589,6 +590,28 @@ int tquic_server_handshake(struct sock *listener_sk,
 	       sizeof(struct sockaddr_storage));
 	memcpy(&child_tsk->bind_addr, &listen_tsk->bind_addr,
 	       sizeof(struct sockaddr_storage));
+
+	/*
+	 * Inherit scheduler preference from listener.
+	 * Child connections use the same scheduler as the listener socket.
+	 */
+	strscpy(child_tsk->requested_scheduler,
+		listen_tsk->requested_scheduler,
+		sizeof(child_tsk->requested_scheduler));
+
+	/* Initialize scheduler for child connection */
+	ret = tquic_sched_init_conn(conn,
+				    child_tsk->requested_scheduler[0] ?
+				    child_tsk->requested_scheduler : NULL);
+	if (ret < 0) {
+		pr_warn("tquic: scheduler init failed for child: %d, using default\n", ret);
+		/* Try with default scheduler */
+		ret = tquic_sched_init_conn(conn, NULL);
+		if (ret < 0) {
+			pr_debug("tquic: default scheduler init failed: %d\n", ret);
+			/* Non-fatal - continue without explicit scheduler */
+		}
+	}
 
 	/* Process Initial packet to extract CIDs */
 	ret = tquic_conn_server_accept_init(conn, initial_pkt);
