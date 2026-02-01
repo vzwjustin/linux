@@ -58,17 +58,31 @@
  * Set "auto" to enable automatic selection per path.
  */
 #define SO_TQUIC_CONGESTION	TQUIC_CONGESTION
-#define TQUIC_IDLE_TIMEOUT	10  /* Idle timeout in ms */
-#define TQUIC_MAX_DATA		11  /* Maximum data per connection */
-#define TQUIC_MAX_STREAM_DATA	12  /* Maximum data per stream */
-#define TQUIC_MAX_STREAMS_BIDI	13  /* Maximum bidirectional streams */
-#define TQUIC_MAX_STREAMS_UNI	14  /* Maximum unidirectional streams */
-#define TQUIC_ACK_DELAY		15  /* Maximum ACK delay in ms */
-#define TQUIC_MIGRATION		16  /* Enable/disable connection migration */
-#define TQUIC_MULTIPATH		17  /* Enable/disable multipath */
-#define TQUIC_PATH_STATUS	18  /* Path status (bonding) */
-#define TQUIC_ACTIVE_PATH	19  /* Set active path (bonding) */
-#define TQUIC_ZEROCOPY		20  /* Enable zero-copy send */
+
+/*
+ * SO_TQUIC_PACING - Enable/disable pacing for socket
+ *
+ * Used with setsockopt(SOL_TQUIC, SO_TQUIC_PACING, &val, sizeof(val)).
+ * The value is an int: 1 = enable pacing, 0 = disable pacing.
+ *
+ * Pacing is enabled by default per CONTEXT.md. When enabled, TQUIC
+ * integrates with FQ qdisc for hardware pacing when available, or
+ * uses internal software pacing otherwise.
+ */
+#define TQUIC_PACING		10  /* Enable/disable pacing for socket */
+#define SO_TQUIC_PACING		TQUIC_PACING
+
+#define TQUIC_IDLE_TIMEOUT	11  /* Idle timeout in ms */
+#define TQUIC_MAX_DATA		12  /* Maximum data per connection */
+#define TQUIC_MAX_STREAM_DATA	13  /* Maximum data per stream */
+#define TQUIC_MAX_STREAMS_BIDI	14  /* Maximum bidirectional streams */
+#define TQUIC_MAX_STREAMS_UNI	15  /* Maximum unidirectional streams */
+#define TQUIC_ACK_DELAY		16  /* Maximum ACK delay in ms */
+#define TQUIC_MIGRATION		17  /* Enable/disable connection migration */
+#define TQUIC_MULTIPATH		18  /* Enable/disable multipath */
+#define TQUIC_PATH_STATUS	19  /* Path status (bonding) */
+#define TQUIC_ACTIVE_PATH	20  /* Set active path (bonding) */
+#define TQUIC_ZEROCOPY		21  /* Enable zero-copy send */
 
 /* WAN Bonding specific socket options */
 #define TQUIC_BOND_MODE		50  /* Bonding mode */

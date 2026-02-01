@@ -148,6 +148,9 @@ static int tquic_init_sock(struct sock *sk)
 	/* Clear requested congestion control (will use per-netns default if not set) */
 	tsk->requested_congestion[0] = '\0';
 
+	/* Enable pacing by default per CONTEXT.md */
+	tsk->pacing_enabled = true;
+
 	/* Create connection structure */
 	tsk->conn = tquic_conn_create(sk, GFP_KERNEL);
 	if (!tsk->conn)
@@ -708,6 +711,25 @@ static int tquic_setsockopt(struct socket *sock, int level, int optname,
 		tsk->nodelay = !!val;
 		break;
 
+	case TQUIC_PACING:
+		/*
+		 * SO_TQUIC_PACING: Enable/disable pacing for socket
+		 *
+		 * When pacing is enabled, TQUIC integrates with FQ qdisc for
+		 * hardware pacing when available, or uses internal pacing.
+		 */
+		tsk->pacing_enabled = !!val;
+		if (sk->sk_pacing_status != SK_PACING_FQ) {
+			/* Update pacing status for internal pacing */
+			if (tsk->pacing_enabled)
+				smp_store_release(&sk->sk_pacing_status,
+						  SK_PACING_NEEDED);
+			else
+				smp_store_release(&sk->sk_pacing_status,
+						  SK_PACING_NONE);
+		}
+		return 0;
+
 	case TQUIC_IDLE_TIMEOUT:
 		if (tsk->conn)
 			tsk->conn->idle_timeout = val;
@@ -1043,6 +1065,15 @@ static int tquic_getsockopt(struct socket *sock, int level, int optname,
 
 		return 0;
 	}
+
+	case TQUIC_PACING:
+		/*
+		 * SO_TQUIC_PACING: Get pacing status
+		 *
+		 * Returns 1 if pacing is enabled, 0 otherwise.
+		 */
+		val = tsk->pacing_enabled ? 1 : 0;
+		break;
 
 	default:
 		return -ENOPROTOOPT;

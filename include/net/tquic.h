@@ -430,6 +430,7 @@ struct tquic_sock {
 
 	/* Socket options */
 	bool nodelay;		/* TQUIC_NODELAY: disable Nagle, send immediately */
+	bool pacing_enabled;	/* SO_TQUIC_PACING: enable pacing (default true) */
 
 	/*
 	 * Scheduler preference (set via SO_TQUIC_SCHEDULER before connect)

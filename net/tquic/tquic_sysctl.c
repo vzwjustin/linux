@@ -333,9 +333,74 @@ static int tquic_sysctl_bond_mode(struct ctl_table *table, int write,
 	return 0;
 }
 
+/*
+ * Per-netns pacing sysctl handler
+ *
+ * Handles reading/writing net.tquic.pacing_enabled which enables/disables
+ * pacing for TQUIC connections. Pacing is enabled by default per CONTEXT.md.
+ */
+static int proc_tquic_pacing_enabled(struct ctl_table *table, int write,
+				     void *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct net *net = current->nsproxy->net_ns;
+	int val = net->tquic.pacing_enabled ? 1 : 0;
+	struct ctl_table tmp_table;
+	int ret;
+
+	memset(&tmp_table, 0, sizeof(tmp_table));
+	tmp_table.procname = table->procname;
+	tmp_table.data = &val;
+	tmp_table.maxlen = sizeof(val);
+	tmp_table.mode = table->mode;
+	tmp_table.extra1 = table->extra1;
+	tmp_table.extra2 = table->extra2;
+
+	ret = proc_dointvec_minmax(&tmp_table, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	net->tquic.pacing_enabled = !!val;
+	pr_debug("tquic: netns pacing %s\n", val ? "enabled" : "disabled");
+	return 0;
+}
+
+/*
+ * Per-netns path degradation threshold sysctl handler
+ *
+ * Handles reading/writing net.tquic.path_degrade_threshold which sets
+ * the number of consecutive losses in same round before path degradation.
+ * Default is 5 per RESEARCH.md recommendation.
+ */
+static int proc_tquic_path_degrade_threshold(struct ctl_table *table, int write,
+					     void *buffer, size_t *lenp,
+					     loff_t *ppos)
+{
+	struct net *net = current->nsproxy->net_ns;
+	int val = net->tquic.path_degrade_threshold;
+	struct ctl_table tmp_table;
+	int ret;
+
+	memset(&tmp_table, 0, sizeof(tmp_table));
+	tmp_table.procname = table->procname;
+	tmp_table.data = &val;
+	tmp_table.maxlen = sizeof(val);
+	tmp_table.mode = table->mode;
+	tmp_table.extra1 = table->extra1;
+	tmp_table.extra2 = table->extra2;
+
+	ret = proc_dointvec_minmax(&tmp_table, write, buffer, lenp, ppos);
+	if (ret || !write)
+		return ret;
+
+	net->tquic.path_degrade_threshold = val;
+	pr_debug("tquic: netns path_degrade_threshold set to %d\n", val);
+	return 0;
+}
+
 /* Min/max values for integer tunables */
 static int zero;
 static int one = 1;
+static int ten = 10;
 static int max_paths = TQUIC_MAX_PATHS;
 static int max_reorder = 1024;
 static int max_timeout = 60000;
@@ -523,6 +588,24 @@ static struct ctl_table tquic_sysctl_table[] = {
 		.extra2		= &one,
 	},
 	{
+		.procname	= "pacing_enabled",
+		.data		= NULL,  /* Uses current->nsproxy->net_ns */
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_tquic_pacing_enabled,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "path_degrade_threshold",
+		.data		= NULL,  /* Uses current->nsproxy->net_ns */
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_tquic_path_degrade_threshold,
+		.extra1		= &one,      /* Minimum 1 */
+		.extra2		= &ten,      /* Maximum 10 */
+	},
+	{
 		.procname	= "debug_level",
 		.data		= &tquic_debug_level,
 		.maxlen		= sizeof(int),
@@ -633,6 +716,22 @@ bool tquic_net_get_ecn_enabled(struct net *net)
 	return net->tquic.ecn_enabled;
 }
 EXPORT_SYMBOL_GPL(tquic_net_get_ecn_enabled);
+
+bool tquic_net_get_pacing_enabled(struct net *net)
+{
+	if (!net)
+		return true;  /* Pacing enabled by default per CONTEXT.md */
+	return net->tquic.pacing_enabled;
+}
+EXPORT_SYMBOL_GPL(tquic_net_get_pacing_enabled);
+
+int tquic_net_get_path_degrade_threshold(struct net *net)
+{
+	if (!net)
+		return 5;  /* Default per RESEARCH.md recommendation */
+	return net->tquic.path_degrade_threshold ?: 5;
+}
+EXPORT_SYMBOL_GPL(tquic_net_get_path_degrade_threshold);
 
 int __init tquic_sysctl_init(void)
 {
