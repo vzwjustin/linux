@@ -273,6 +273,26 @@ config TQUIC_DIAG
 	  netlink interface. This enables tools like ss to display
 	  TQUIC connection information.
 
+config TQUIC_NETFILTER
+	tristate "TQUIC Netfilter integration"
+	depends on TQUIC_CORE
+	depends on NETFILTER
+	default y
+	help
+	  Enable Netfilter integration for TQUIC. This provides:
+	    - QUIC connection tracking for stateful firewalls
+	    - Support for QUIC-aware NAT traversal
+	    - Connection state inspection via /proc/net/tquic_conntrack
+	    - Integration with existing netfilter rules
+
+	  This is important for TQUIC WAN bonding scenarios where
+	  firewalls or NAT devices are present in the network path.
+
+	  To compile this as a module, choose M here: the module will
+	  be called tquic_nf.
+
+	  If unsure, say Y.
+
 config TQUIC_DEBUGFS
 	bool "TQUIC debugfs interface"
 	depends on TQUIC_CORE

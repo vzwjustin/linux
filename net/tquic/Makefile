@@ -70,6 +70,9 @@ tquic_crypto-y := \
 # IPv6 Support
 tquic-$(CONFIG_TQUIC_IPV6) += tquic_ipv6.o
 
+# Netfilter integration for connection tracking
+obj-$(CONFIG_TQUIC_NETFILTER) += tquic_nf.o
+
 # KUnit tests
 obj-$(CONFIG_TQUIC_KUNIT_TEST) += tquic_test.o
 tquic_test-y := \
