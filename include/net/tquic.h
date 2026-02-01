@@ -63,6 +63,7 @@ struct tquic_stream;
 struct tquic_path;
 struct tquic_frame;
 struct tquic_packet;
+struct tquic_coupled_state;
 
 /**
  * enum tquic_conn_state - Connection state machine states
@@ -376,6 +377,9 @@ struct tquic_connection {
 	/* Path manager state */
 	struct tquic_pm_state *pm;
 
+	/* Coupled CC state (NULL when coupling disabled) */
+	struct tquic_coupled_state *coupled_cc;
+
 	/* Connection token for netlink identification */
 	u32 token;
 
@@ -495,6 +499,7 @@ struct tquic_cong_ops {
 	void (*on_ack)(void *cong_data, u64 bytes_acked, u64 rtt_us);
 	void (*on_loss)(void *cong_data, u64 bytes_lost);
 	void (*on_rtt_update)(void *cong_data, u64 rtt_us);
+	void (*on_ecn)(void *cong_data, u64 ecn_ce_count);  /* ECN CE handler */
 
 	u64 (*get_cwnd)(void *cong_data);
 	u64 (*get_pacing_rate)(void *cong_data);
@@ -1207,11 +1212,13 @@ void __exit tquic_timer_exit(void);
 
 /**
  * enum tquic_coupled_algo - Coupled congestion control algorithm selection
+ * @TQUIC_COUPLED_NONE: No coupled CC (per-path independent CC)
  * @TQUIC_COUPLED_LIA: Linked Increases Algorithm - basic coupled CC
  * @TQUIC_COUPLED_OLIA: Opportunistic LIA (RFC 6356) - recommended default
  * @TQUIC_COUPLED_BALIA: Balanced Linked Adaptation - adaptive coupling
  */
 enum tquic_coupled_algo {
+	TQUIC_COUPLED_NONE = -1,
 	TQUIC_COUPLED_LIA = 0,
 	TQUIC_COUPLED_OLIA,
 	TQUIC_COUPLED_BALIA,
@@ -1271,6 +1278,43 @@ struct tquic_subflow_stats {
 int tquic_coupled_set_algo(struct tquic_connection *conn,
 			   enum tquic_coupled_algo algo);
 int tquic_coupled_get_algo(struct tquic_connection *conn);
+
+/*
+ * Coupled CC coordination API (net/tquic/cong/tquic_cong.c)
+ *
+ * These functions manage the coupled CC layer which coordinates
+ * CWND across multiple paths for fairness at shared bottlenecks.
+ */
+
+/**
+ * tquic_cong_enable_coupling - Enable coupled CC for a connection
+ * @conn: Connection to enable coupling on
+ * @algo: Coupled algorithm (OLIA, LIA, or BALIA)
+ *
+ * Per CONTEXT.md: "Coupled CC is opt-in via sysctl/sockopt (per-path CC by default)"
+ * Per RESEARCH.md: "OLIA as default" when coupled CC is enabled.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int tquic_cong_enable_coupling(struct tquic_connection *conn,
+			       enum tquic_coupled_algo algo);
+
+/**
+ * tquic_cong_disable_coupling - Disable coupled CC for a connection
+ * @conn: Connection to disable coupling on
+ *
+ * Reverts to per-path independent CC. Each path continues using
+ * its assigned CC algorithm without coupled coordination.
+ */
+void tquic_cong_disable_coupling(struct tquic_connection *conn);
+
+/**
+ * tquic_cong_is_coupling_enabled - Check if coupled CC is enabled
+ * @conn: Connection to check
+ *
+ * Return: true if coupled CC is active, false otherwise
+ */
+bool tquic_cong_is_coupling_enabled(struct tquic_connection *conn);
 
 /* Get coupled CC statistics */
 int tquic_coupled_get_stats(struct tquic_connection *conn,

@@ -547,5 +547,199 @@ const char *tquic_cong_select_for_rtt(struct net *net, u64 rtt_us)
 }
 EXPORT_SYMBOL_GPL(tquic_cong_select_for_rtt);
 
+/*
+ * =============================================================================
+ * Coupled CC Coordination Layer
+ * =============================================================================
+ *
+ * These functions enable connection-level coupled congestion control using
+ * OLIA/LIA/BALIA algorithms. Coupled CC ensures TCP-fairness at shared
+ * bottlenecks while utilizing full aggregate bandwidth.
+ *
+ * Per CONTEXT.md: "Coupled CC is opt-in via sysctl/sockopt (per-path CC by default)"
+ * Per CONTEXT.md: "Loss on one path affects only that path's CWND"
+ * Per RESEARCH.md: "OLIA as default" coupled algorithm
+ */
+
+/* Forward declarations for coupled.c functions */
+struct tquic_coupled_state *tquic_coupled_create(struct tquic_connection *conn,
+						  enum tquic_coupled_algo algo);
+void tquic_coupled_destroy(struct tquic_coupled_state *state);
+int tquic_coupled_attach_path(struct tquic_coupled_state *state,
+			      struct tquic_path *path);
+void tquic_coupled_detach_path(struct tquic_coupled_state *state,
+			       struct tquic_path *path);
+void tquic_coupled_on_ack(struct tquic_coupled_state *state,
+			  struct tquic_path *path,
+			  u64 bytes_acked, u64 rtt_us);
+void tquic_coupled_on_loss(struct tquic_coupled_state *state,
+			   struct tquic_path *path,
+			   u64 bytes_lost);
+
+/*
+ * tquic_cong_enable_coupling - Enable coupled CC for a connection
+ * @conn: Connection to enable coupling on
+ * @algo: Coupled algorithm (TQUIC_COUPLED_OLIA, LIA, or BALIA)
+ *
+ * Creates coupled CC state and attaches all existing paths.
+ * OLIA is the default per RESEARCH.md recommendation.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int tquic_cong_enable_coupling(struct tquic_connection *conn,
+			       enum tquic_coupled_algo algo)
+{
+	struct tquic_coupled_state *state;
+	struct tquic_path *path;
+	int ret;
+
+	if (!conn)
+		return -EINVAL;
+
+	/* Already enabled? */
+	if (conn->coupled_cc) {
+		pr_debug("tquic_cong: coupled CC already enabled\n");
+		return -EEXIST;
+	}
+
+	/* Use OLIA as default if unspecified (per RESEARCH.md) */
+	if (algo == TQUIC_COUPLED_NONE)
+		algo = TQUIC_COUPLED_OLIA;
+
+	/* Create coupled state */
+	state = tquic_coupled_create(conn, algo);
+	if (!state)
+		return -ENOMEM;
+
+	/* Attach all existing paths */
+	spin_lock(&conn->paths_lock);
+	list_for_each_entry(path, &conn->paths, list) {
+		if (path->state == TQUIC_PATH_ACTIVE ||
+		    path->state == TQUIC_PATH_VALIDATED) {
+			ret = tquic_coupled_attach_path(state, path);
+			if (ret < 0) {
+				pr_warn("tquic_cong: failed to attach path %u: %d\n",
+					path->path_id, ret);
+				/* Continue with other paths */
+			}
+		}
+	}
+	spin_unlock(&conn->paths_lock);
+
+	/* Store coupled state in connection */
+	conn->coupled_cc = state;
+
+	pr_info("tquic_cong: enabled coupled CC (algo=%d) for connection\n", algo);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_cong_enable_coupling);
+
+/*
+ * tquic_cong_disable_coupling - Disable coupled CC for a connection
+ * @conn: Connection to disable coupling on
+ *
+ * Detaches all paths from coupled state and destroys it.
+ * Paths continue using their individual CC algorithms.
+ */
+void tquic_cong_disable_coupling(struct tquic_connection *conn)
+{
+	struct tquic_coupled_state *state;
+	struct tquic_path *path;
+
+	if (!conn)
+		return;
+
+	state = conn->coupled_cc;
+	if (!state) {
+		pr_debug("tquic_cong: coupled CC not enabled\n");
+		return;
+	}
+
+	/* Detach all paths */
+	spin_lock(&conn->paths_lock);
+	list_for_each_entry(path, &conn->paths, list) {
+		tquic_coupled_detach_path(state, path);
+	}
+	spin_unlock(&conn->paths_lock);
+
+	/* Clear connection reference and destroy state */
+	conn->coupled_cc = NULL;
+	tquic_coupled_destroy(state);
+
+	pr_info("tquic_cong: disabled coupled CC for connection\n");
+}
+EXPORT_SYMBOL_GPL(tquic_cong_disable_coupling);
+
+/*
+ * tquic_cong_is_coupling_enabled - Check if coupled CC is enabled
+ * @conn: Connection to check
+ *
+ * Return: true if coupled CC is active, false otherwise
+ */
+bool tquic_cong_is_coupling_enabled(struct tquic_connection *conn)
+{
+	if (!conn)
+		return false;
+
+	return conn->coupled_cc != NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_cong_is_coupling_enabled);
+
+/*
+ * =============================================================================
+ * ECN Support
+ * =============================================================================
+ *
+ * ECN (Explicit Congestion Notification) provides early congestion signals
+ * via IP header marking rather than packet loss.
+ *
+ * Per CONTEXT.md: "ECN support: available but off by default (enable via sysctl)"
+ */
+
+/*
+ * tquic_cong_on_ecn - Dispatch ECN CE event to path's CC algorithm
+ * @path: Path that received ECN CE marking
+ * @ecn_ce_count: Number of ECN CE marks reported in ACK
+ *
+ * ECN CE (Congestion Experienced) marks indicate congestion without loss.
+ * The CC algorithm should reduce CWND similar to loss response.
+ *
+ * Per CONTEXT.md: "Loss on one path reduces only that path's CWND"
+ * This applies to ECN as well - ECN on one path affects only that path.
+ */
+void tquic_cong_on_ecn(struct tquic_path *path, u64 ecn_ce_count)
+{
+	struct tquic_cong_ops *ca;
+
+	if (!path || ecn_ce_count == 0)
+		return;
+
+	ca = path->cong_ops;
+	if (!ca || !path->cong)
+		return;
+
+	/*
+	 * ECN CE is treated as a congestion signal, similar to loss.
+	 * Call on_loss with an estimated bytes value based on CE count.
+	 *
+	 * RFC 9002 Section 7.1: "Each increase in the ECN-CE counter
+	 * SHOULD be treated as a single congestion notification."
+	 *
+	 * We estimate 1200 bytes (MTU) per CE mark for CWND reduction.
+	 */
+	if (ca->on_loss) {
+		u64 ecn_bytes = ecn_ce_count * 1200;
+		ca->on_loss(path->cong, ecn_bytes);
+
+		/* Update path stats from CC state */
+		if (ca->get_cwnd)
+			path->stats.cwnd = ca->get_cwnd(path->cong);
+
+		pr_debug("tquic_cong: ECN CE on path %u, ce_count=%llu, new_cwnd=%u\n",
+			 path->path_id, ecn_ce_count, path->stats.cwnd);
+	}
+}
+EXPORT_SYMBOL_GPL(tquic_cong_on_ecn);
+
 MODULE_DESCRIPTION("TQUIC Congestion Control Framework");
 MODULE_LICENSE("GPL");
