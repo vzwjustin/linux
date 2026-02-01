@@ -10,12 +10,21 @@ tquic-y := \
 	tquic_main.o \
 	tquic_proto.o \
 	tquic_socket.o \
+	tquic_stream.o \
+	tquic_handshake.o \
 	tquic_netlink.o \
 	tquic_sysctl.o \
 	tquic_udp.o \
 	tquic_output.o \
 	tquic_input.o \
-	tquic_timer.o
+	tquic_timer.o \
+	tquic_cid.o \
+	tquic_migration.o \
+	tquic_diag.o \
+	tquic_mib.o \
+	tquic_proc.o \
+	tquic_server.o \
+	cong/tquic_cong.o
 
 # Core protocol components
 obj-$(CONFIG_TQUIC_CORE) += tquic_core.o
@@ -38,6 +47,8 @@ tquic_bond-y := \
 # Path Manager
 obj-$(CONFIG_TQUIC_PATH_MANAGER) += tquic_pm.o
 tquic_pm-y := \
+	pm/pm_types.o \
+	pm/pm_kernel.o \
 	pm/path_manager.o
 
 # Packet Scheduler

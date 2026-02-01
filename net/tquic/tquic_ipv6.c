@@ -45,6 +45,10 @@
 #include <net/udp_tunnel.h>
 #include <net/tquic.h>
 
+#include "protocol.h"
+
+/* TODO: Remove inline tquic6_sock definition below, use protocol.h instead */
+
 /* Forward declarations */
 static int tquic_v6_connect(struct sock *sk, struct sockaddr *addr, int addr_len);
 static void tquic_v6_mtu_reduced(struct sock *sk);

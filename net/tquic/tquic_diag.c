@@ -1,194 +1,84 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * TQUIC socket monitoring support
+ * TQUIC socket monitoring support for ss tool
  *
  * Copyright (c) 2026 Linux Foundation
  *
- * Provides sock_diag netlink interface for TQUIC sockets,
- * enabling tools like ss to display TQUIC connection information.
+ * This file implements the inet_diag handler for TQUIC connections,
+ * enabling visibility of TQUIC connections in the ss utility.
+ *
+ * Following the MPTCP pattern in net/mptcp/mptcp_diag.c
  */
 
-#include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/net.h>
 #include <linux/inet_diag.h>
-#include <linux/sock_diag.h>
+#include <linux/netlink.h>
 #include <net/netlink.h>
 #include <net/sock.h>
 #include <net/inet_connection_sock.h>
 #include <net/tquic.h>
-#include <uapi/linux/tquic.h>
+#include <uapi/linux/tquic_diag.h>
+#include "protocol.h"
 
 /*
- * TQUIC diagnostic context for iteration
+ * State name mapping for ss output
+ *
+ * Per CONTEXT.md: State names use hybrid format showing both
+ * QUIC state and TCP equivalent in parentheses.
+ */
+static const char *tquic_state_names[] = {
+	[TQUIC_CONN_IDLE]       = "IDLE (CLOSED)",
+	[TQUIC_CONN_CONNECTING] = "CONNECTING (SYN_SENT)",
+	[TQUIC_CONN_CONNECTED]  = "CONNECTED (ESTABLISHED)",
+	[TQUIC_CONN_CLOSING]    = "CLOSING (FIN_WAIT1)",
+	[TQUIC_CONN_DRAINING]   = "DRAINING (TIME_WAIT)",
+	[TQUIC_CONN_CLOSED]     = "CLOSED (CLOSED)",
+};
+
+static inline const char *tquic_state_name(enum tquic_conn_state state)
+{
+	if (state >= ARRAY_SIZE(tquic_state_names))
+		return "UNKNOWN";
+	return tquic_state_names[state];
+}
+
+/*
+ * Diag context for iteration
+ *
+ * Used to maintain state across multiple dump calls for pagination.
  */
 struct tquic_diag_ctx {
 	long s_slot;
 	long s_num;
-	unsigned int l_slot;
-	unsigned int l_num;
 };
 
 /*
- * TQUIC info structure for userspace
- * This matches struct tquic_multipath_info from UAPI
- */
-struct tquic_diag_info {
-	__u8		multipath_enabled;
-	__u8		scheduler_type;
-	__u8		bonding_mode;
-	__u8		num_paths;
-	__u8		num_active;
-	__u8		num_standby;
-	__u8		num_failed;
-	__u8		reserved;
-	__u64		total_bytes_sent;
-	__u64		total_bytes_received;
-	__u64		total_packets_sent;
-	__u64		total_packets_received;
-	__u64		aggregate_bandwidth;
-	__u64		effective_bandwidth;
-	__u64		scheduler_decisions;
-	__u64		path_switches;
-	__u32		min_paths;
-	__u32		max_paths;
-	__u32		failover_timeout;
-	__u32		probe_interval;
-} __packed;
-
-/*
- * Forward declarations for external TQUIC functions
+ * External reference to global connection table from tquic_main.c
  */
 extern struct rhashtable tquic_conn_table;
 extern const struct rhashtable_params tquic_conn_params;
 
-/* Iterator for TQUIC connections */
-struct tquic_connection *tquic_diag_iter_next(struct net *net,
-					      long *s_slot, long *s_num);
-
 /*
- * Fill in TQUIC-specific diagnostic information
+ * Helper to count streams in the connection's rb-tree
  */
-static void tquic_diag_fill_info(struct sock *sk, struct tquic_diag_info *info)
+static u32 tquic_count_streams(struct tquic_connection *conn)
 {
-	struct tquic_connection *conn;
-	struct tquic_path *path;
-	int active = 0, standby = 0, failed = 0;
+	struct rb_node *node;
+	u32 count = 0;
 
-	memset(info, 0, sizeof(*info));
-
-	/* Get TQUIC connection from socket - accessing through quic_sock */
-	conn = ((struct quic_sock *)sk)->conn;
 	if (!conn)
-		return;
+		return 0;
 
-	/* Basic info */
-	info->multipath_enabled = !list_empty(&conn->paths);
+	for (node = rb_first(&conn->streams); node; node = rb_next(node))
+		count++;
 
-	/* Count paths by state */
-	list_for_each_entry(path, &conn->paths, list) {
-		switch (path->state) {
-		case TQUIC_PATH_ACTIVE:
-			active++;
-			break;
-		case TQUIC_PATH_STANDBY:
-			standby++;
-			break;
-		case TQUIC_PATH_FAILED:
-			failed++;
-			break;
-		default:
-			break;
-		}
-	}
-
-	info->num_paths = conn->num_paths;
-	info->num_active = active;
-	info->num_standby = standby;
-	info->num_failed = failed;
-
-	/* Scheduler info */
-	if (conn->scheduler) {
-		info->scheduler_type = conn->scheduler->type;
-		info->scheduler_decisions = conn->scheduler->decisions;
-		info->path_switches = conn->scheduler->path_switches;
-	}
-
-	/* Statistics */
-	info->total_bytes_sent = conn->stats.tx_bytes;
-	info->total_bytes_received = conn->stats.rx_bytes;
-	info->total_packets_sent = conn->stats.tx_packets;
-	info->total_packets_received = conn->stats.rx_packets;
-
-	/* Aggregate bandwidth (sum across active paths) */
-	list_for_each_entry(path, &conn->paths, list) {
-		if (path->state == TQUIC_PATH_ACTIVE) {
-			info->aggregate_bandwidth += path->bandwidth.estimated_bw;
-		}
-	}
-	info->effective_bandwidth = info->aggregate_bandwidth;
-
-	/* Configuration */
-	info->min_paths = 1;
-	info->max_paths = TQUIC_MAX_PATHS;
-	info->failover_timeout = TQUIC_DEFAULT_FAILOVER_MS;
-	info->probe_interval = TQUIC_DEFAULT_PROBE_INTERVAL_MS;
+	return count;
 }
 
 /*
- * Dump a single TQUIC socket for diagnostics
- */
-static int tquic_diag_dump_one(struct netlink_callback *cb,
-			       const struct inet_diag_req_v2 *req)
-{
-	struct sk_buff *in_skb = cb->skb;
-	struct net *net = sock_net(in_skb->sk);
-	struct sk_buff *rep;
-	struct sock *sk;
-	struct tquic_connection *conn;
-	int err = -ENOENT;
-
-	/* Lookup connection by token (stored in cookie) */
-	rcu_read_lock();
-	/* Use connection lookup via global table */
-	conn = NULL; /* TODO: Implement lookup by token */
-	rcu_read_unlock();
-
-	if (!conn)
-		goto out_nosk;
-
-	sk = conn->sk;
-	if (!sk || !net_eq(sock_net(sk), net))
-		goto out_nosk;
-
-	err = -ENOMEM;
-	rep = nlmsg_new(nla_total_size(sizeof(struct inet_diag_msg)) +
-			inet_diag_msg_attrs_size() +
-			nla_total_size(sizeof(struct tquic_diag_info)) +
-			nla_total_size(sizeof(struct inet_diag_meminfo)) + 64,
-			GFP_KERNEL);
-	if (!rep)
-		goto out;
-
-	err = inet_sk_diag_fill(sk, inet_csk(sk), rep, cb, req, 0,
-				netlink_net_capable(in_skb, CAP_NET_ADMIN));
-	if (err < 0) {
-		WARN_ON(err == -EMSGSIZE);
-		kfree_skb(rep);
-		goto out;
-	}
-
-	err = nlmsg_unicast(net->diag_nlsk, rep, NETLINK_CB(in_skb).portid);
-
-out:
-	sock_put(sk);
-
-out_nosk:
-	return err;
-}
-
-/*
- * Check if socket matches filter and dump it
+ * sk_diag_dump - Dump a single socket to skb
  */
 static int sk_diag_dump(struct sock *sk, struct sk_buff *skb,
 			struct netlink_callback *cb,
@@ -203,49 +93,89 @@ static int sk_diag_dump(struct sock *sk, struct sk_buff *skb,
 }
 
 /*
- * Iterate through TQUIC connections
- * This iterates through the global connection hashtable
+ * tquic_diag_dump_one - Dump a single TQUIC connection by cookie
+ *
+ * Look up a specific connection using the provided cookie (which is
+ * the socket cookie for TQUIC).
  */
-static struct tquic_connection *tquic_diag_iter_next_conn(struct net *net,
-							  long *slot,
-							  long *num)
+static int tquic_diag_dump_one(struct netlink_callback *cb,
+			       const struct inet_diag_req_v2 *req)
 {
+	struct sk_buff *in_skb = cb->skb;
 	struct tquic_connection *conn = NULL;
 	struct rhashtable_iter iter;
-	int count = 0;
-	long target = *num;
+	struct sk_buff *rep;
+	int err = -ENOENT;
+	struct net *net;
+	struct sock *sk;
 
+	net = sock_net(in_skb->sk);
+
+	/*
+	 * Iterate connections looking for matching cookie.
+	 * The cookie is stored in req->id.idiag_cookie[0].
+	 */
 	rhashtable_walk_enter(&tquic_conn_table, &iter);
 	rhashtable_walk_start(&iter);
 
 	while ((conn = rhashtable_walk_next(&iter)) != NULL) {
 		if (IS_ERR(conn)) {
-			if (PTR_ERR(conn) == -EAGAIN)
-				continue;
-			break;
+			conn = NULL;
+			continue;
 		}
 
-		if (!conn->sk || !net_eq(sock_net(conn->sk), net))
+		sk = conn->sk;
+		if (!sk || !net_eq(sock_net(sk), net))
 			continue;
 
-		if (count >= target) {
-			/* Found next connection */
-			if (!refcount_inc_not_zero(&conn->refcnt))
-				continue;
-			(*num)++;
+		if (sock_i_ino(sk) == req->id.idiag_cookie[0]) {
+			if (!refcount_inc_not_zero(&sk->sk_refcnt))
+				conn = NULL;
 			break;
 		}
-		count++;
+		conn = NULL;
 	}
 
 	rhashtable_walk_stop(&iter);
 	rhashtable_walk_exit(&iter);
 
-	return IS_ERR(conn) ? NULL : conn;
+	if (!conn)
+		goto out_nosk;
+
+	sk = conn->sk;
+	err = -ENOMEM;
+	rep = nlmsg_new(nla_total_size(sizeof(struct inet_diag_msg)) +
+			inet_diag_msg_attrs_size() +
+			nla_total_size(sizeof(struct tquic_info)) +
+			nla_total_size(sizeof(struct inet_diag_meminfo)) + 64,
+			GFP_KERNEL);
+	if (!rep)
+		goto out;
+
+	err = inet_sk_diag_fill(sk, inet_csk(sk), rep, cb, req, 0,
+				netlink_net_capable(in_skb, CAP_NET_ADMIN));
+	if (err < 0) {
+		WARN_ON(err == -EMSGSIZE);
+		kfree_skb(rep);
+		goto out;
+	}
+	err = nlmsg_unicast(net->diag_nlsk, rep, NETLINK_CB(in_skb).portid);
+
+out:
+	sock_put(sk);
+
+out_nosk:
+	return err;
 }
 
 /*
- * Dump all TQUIC connections
+ * tquic_diag_dump - Dump all TQUIC connections
+ *
+ * Iterate the global connection table and dump each connection
+ * that matches the filter criteria and belongs to the requesting
+ * network namespace.
+ *
+ * Per RESEARCH.md pitfall #5: Filter by net_eq() for namespace isolation.
  */
 static void tquic_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 			    const struct inet_diag_req_v2 *r)
@@ -254,217 +184,311 @@ static void tquic_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 	struct tquic_diag_ctx *diag_ctx = (void *)cb->ctx;
 	struct net *net = sock_net(skb->sk);
 	struct tquic_connection *conn;
+	struct rhashtable_iter iter;
+	long num = 0;
 
 	BUILD_BUG_ON(sizeof(cb->ctx) < sizeof(*diag_ctx));
 
-	while ((conn = tquic_diag_iter_next_conn(net, &diag_ctx->s_slot,
-						 &diag_ctx->s_num)) != NULL) {
-		struct inet_sock *inet = inet_sk(conn->sk);
-		struct sock *sk = conn->sk;
+	rhashtable_walk_enter(&tquic_conn_table, &iter);
+	rhashtable_walk_start(&iter);
+
+	while ((conn = rhashtable_walk_next(&iter)) != NULL) {
+		struct inet_sock *inet;
+		struct sock *sk;
 		int ret = 0;
 
-		/* Filter by state */
+		if (IS_ERR(conn))
+			continue;
+
+		/* Skip entries until we reach our saved position */
+		if (num < diag_ctx->s_num) {
+			num++;
+			continue;
+		}
+
+		sk = conn->sk;
+		if (!sk)
+			goto next;
+
+		/* Namespace isolation - only show connections from this netns */
+		if (!net_eq(sock_net(sk), net))
+			goto next;
+
+		inet = inet_sk(sk);
+
+		/* Filter by state if specified */
 		if (!(r->idiag_states & (1 << sk->sk_state)))
 			goto next;
 
-		/* Filter by family */
+		/* Filter by family if specified */
 		if (r->sdiag_family != AF_UNSPEC &&
 		    sk->sk_family != r->sdiag_family)
 			goto next;
 
-		/* Filter by source port */
+		/* Filter by source port if specified */
 		if (r->id.idiag_sport != inet->inet_sport &&
 		    r->id.idiag_sport)
 			goto next;
 
-		/* Filter by destination port */
+		/* Filter by destination port if specified */
 		if (r->id.idiag_dport != inet->inet_dport &&
 		    r->id.idiag_dport)
 			goto next;
 
+		/* Get reference to socket */
+		if (!refcount_inc_not_zero(&sk->sk_refcnt))
+			goto next;
+
 		ret = sk_diag_dump(sk, skb, cb, r, net_admin);
-next:
-		/* Release connection reference */
-		if (refcount_dec_and_test(&conn->refcnt))
-			tquic_conn_destroy(conn);
+		sock_put(sk);
 
 		if (ret < 0) {
-			/* Will retry on the same position */
-			diag_ctx->s_num--;
+			/* Will retry from this position */
+			diag_ctx->s_num = num;
 			break;
 		}
+
+next:
+		num++;
 		cond_resched();
 	}
+
+	rhashtable_walk_stop(&iter);
+	rhashtable_walk_exit(&iter);
+
+	diag_ctx->s_num = num;
 }
 
 /*
- * Get TQUIC-specific diagnostic info for a socket
+ * tquic_diag_get_info - Fill basic TQUIC info structure
+ *
+ * This fills the struct tquic_info that appears in basic ss output.
+ * The info includes connection state, path count, stream count, RTT,
+ * and traffic statistics.
  */
 static void tquic_diag_get_info(struct sock *sk, struct inet_diag_msg *r,
 				void *_info)
 {
-	struct tquic_diag_info *info = _info;
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_info *info = _info;
 	struct tquic_connection *conn;
 
-	/* Set queue sizes */
 	r->idiag_rqueue = sk_rmem_alloc_get(sk);
 	r->idiag_wqueue = sk_wmem_alloc_get(sk);
-
-	/* Check if listening socket */
-	if (inet_sk_state_load(sk) == TCP_LISTEN) {
-		r->idiag_rqueue = READ_ONCE(sk->sk_ack_backlog);
-		r->idiag_wqueue = READ_ONCE(sk->sk_max_ack_backlog);
-	}
 
 	if (!info)
 		return;
 
-	/* Get TQUIC connection and fill multipath info */
-	conn = ((struct quic_sock *)sk)->conn;
-	if (conn) {
-		tquic_diag_fill_info(sk, info);
-	} else {
-		memset(info, 0, sizeof(*info));
-	}
+	memset(info, 0, sizeof(*info));
+
+	conn = tsk->conn;
+	if (!conn)
+		return;
+
+	info->state = conn->state;
+	info->num_paths = conn->num_paths;
+	info->num_streams = tquic_count_streams(conn);
+
+	/* RTT from active path if available */
+	if (conn->active_path)
+		info->rtt_us = conn->active_path->stats.rtt_smoothed;
+
+	/* Aggregate statistics */
+	info->tx_bytes = conn->stats.tx_bytes;
+	info->rx_bytes = conn->stats.rx_bytes;
+	info->retransmits = conn->stats.retransmissions;
 }
 
 /*
- * TQUIC diagnostic handler registration
+ * tquic_diag_get_aux_size - Calculate size needed for auxiliary data
+ *
+ * Returns the size needed for extended attributes including CIDs
+ * and per-path information.
+ */
+static size_t tquic_diag_get_aux_size(struct sock *sk, bool net_admin)
+{
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_connection *conn = tsk->conn;
+	size_t size = 0;
+
+	if (!conn)
+		return 0;
+
+	/* Version */
+	size += nla_total_size(sizeof(u32));
+
+	/* Stream count */
+	size += nla_total_size(sizeof(u32));
+
+	/* CIDs are only visible to CAP_NET_ADMIN (sensitive info) */
+	if (net_admin) {
+		/* SCID */
+		size += nla_total_size(conn->scid.len);
+		/* DCID */
+		size += nla_total_size(conn->dcid.len);
+	}
+
+	/* Per-path info: nested attribute with path data */
+	if (conn->num_paths > 0) {
+		/* Nest header */
+		size += nla_total_size(0);
+		/* Each path: id + state + rtt + cwnd + tx + rx + lost */
+		size += conn->num_paths * (
+			nla_total_size(sizeof(u32)) +   /* path_id */
+			nla_total_size(sizeof(u8)) +    /* state */
+			nla_total_size(sizeof(u32)) +   /* rtt */
+			nla_total_size(sizeof(u32)) +   /* cwnd */
+			nla_total_size(sizeof(u64)) +   /* tx_bytes */
+			nla_total_size(sizeof(u64)) +   /* rx_bytes */
+			nla_total_size(sizeof(u64)) +   /* lost */
+			nla_total_size(0)               /* nest end per path */
+		);
+	}
+
+	return size;
+}
+
+/*
+ * tquic_diag_get_aux - Fill extended TQUIC attributes
+ *
+ * This provides the extended information shown by `ss -i`:
+ * - QUIC version
+ * - Connection IDs (SCID/DCID) - only for CAP_NET_ADMIN
+ * - Stream count
+ * - Per-path breakdown with RTT, cwnd, bytes
+ *
+ * Per CONTEXT.md: Connection IDs shown in full hex for packet capture
+ * correlation.
+ */
+static int tquic_diag_get_aux(struct sock *sk, bool net_admin,
+			      struct sk_buff *skb)
+{
+	struct tquic_sock *tsk = tquic_sk(sk);
+	struct tquic_connection *conn = tsk->conn;
+	struct tquic_path *path;
+	struct nlattr *paths_nest;
+	u32 stream_count;
+
+	if (!conn)
+		return 0;
+
+	/* QUIC version */
+	if (nla_put_u32(skb, TQUIC_DIAG_ATTR_VERSION, conn->version))
+		return -EMSGSIZE;
+
+	/* Stream count */
+	stream_count = tquic_count_streams(conn);
+	if (nla_put_u32(skb, TQUIC_DIAG_ATTR_STREAMS, stream_count))
+		return -EMSGSIZE;
+
+	/*
+	 * Connection IDs - only visible to CAP_NET_ADMIN
+	 * Per CONTEXT.md: CIDs are sensitive and needed for packet
+	 * capture correlation, so require admin privileges.
+	 */
+	if (net_admin) {
+		/* Source CID - full raw bytes for hex display */
+		if (conn->scid.len > 0) {
+			if (nla_put(skb, TQUIC_DIAG_ATTR_SCID,
+				    conn->scid.len, conn->scid.id))
+				return -EMSGSIZE;
+		}
+
+		/* Destination CID */
+		if (conn->dcid.len > 0) {
+			if (nla_put(skb, TQUIC_DIAG_ATTR_DCID,
+				    conn->dcid.len, conn->dcid.id))
+				return -EMSGSIZE;
+		}
+	}
+
+	/* Per-path information as nested attributes */
+	if (!list_empty(&conn->paths)) {
+		paths_nest = nla_nest_start(skb, TQUIC_DIAG_ATTR_PATHS);
+		if (!paths_nest)
+			return -EMSGSIZE;
+
+		list_for_each_entry(path, &conn->paths, list) {
+			struct nlattr *path_nest;
+
+			path_nest = nla_nest_start(skb, 0);
+			if (!path_nest) {
+				nla_nest_cancel(skb, paths_nest);
+				return -EMSGSIZE;
+			}
+
+			if (nla_put_u32(skb, TQUIC_DIAG_PATH_ID, path->path_id))
+				goto path_error;
+			if (nla_put_u8(skb, TQUIC_DIAG_PATH_STATE, path->state))
+				goto path_error;
+			if (nla_put_u32(skb, TQUIC_DIAG_PATH_RTT,
+					path->stats.rtt_smoothed))
+				goto path_error;
+			if (nla_put_u32(skb, TQUIC_DIAG_PATH_CWND,
+					path->stats.cwnd))
+				goto path_error;
+			if (nla_put_u64_64bit(skb, TQUIC_DIAG_PATH_TX_BYTES,
+					      path->stats.tx_bytes,
+					      TQUIC_DIAG_PATH_UNSPEC))
+				goto path_error;
+			if (nla_put_u64_64bit(skb, TQUIC_DIAG_PATH_RX_BYTES,
+					      path->stats.rx_bytes,
+					      TQUIC_DIAG_PATH_UNSPEC))
+				goto path_error;
+			if (nla_put_u64_64bit(skb, TQUIC_DIAG_PATH_LOST,
+					      path->stats.lost_packets,
+					      TQUIC_DIAG_PATH_UNSPEC))
+				goto path_error;
+
+			nla_nest_end(skb, path_nest);
+			continue;
+
+path_error:
+			nla_nest_cancel(skb, path_nest);
+			nla_nest_cancel(skb, paths_nest);
+			return -EMSGSIZE;
+		}
+
+		nla_nest_end(skb, paths_nest);
+	}
+
+	return 0;
+}
+
+/*
+ * TQUIC inet_diag handler
+ *
+ * Registered with inet_diag_register() for IPPROTO_TQUIC (263).
  */
 static const struct inet_diag_handler tquic_diag_handler = {
 	.owner		 = THIS_MODULE,
 	.dump		 = tquic_diag_dump,
 	.dump_one	 = tquic_diag_dump_one,
 	.idiag_get_info  = tquic_diag_get_info,
-	.idiag_type	 = IPPROTO_UDP, /* QUIC runs over UDP */
-	.idiag_info_size = sizeof(struct tquic_diag_info),
+	.idiag_get_aux   = tquic_diag_get_aux,
+	.idiag_get_aux_size = tquic_diag_get_aux_size,
+	.idiag_type	 = IPPROTO_TQUIC,
+	.idiag_info_size = sizeof(struct tquic_info),
 };
-
-/*
- * TQUIC diagnostic handler for IPv6
- */
-static const struct inet_diag_handler tquic6_diag_handler = {
-	.owner		 = THIS_MODULE,
-	.dump		 = tquic_diag_dump,
-	.dump_one	 = tquic_diag_dump_one,
-	.idiag_get_info  = tquic_diag_get_info,
-	.idiag_type	 = IPPROTO_UDP,
-	.idiag_info_size = sizeof(struct tquic_diag_info),
-};
-
-/*
- * Proc file system interface for TQUIC connections
- * /proc/net/tquic_connections
- */
-#ifdef CONFIG_PROC_FS
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
-
-static int tquic_seq_show(struct seq_file *seq, void *v)
-{
-	struct tquic_connection *conn = v;
-	struct sock *sk;
-	struct inet_sock *inet;
-	struct tquic_path *path;
-	int path_count = 0;
-
-	if (v == SEQ_START_TOKEN) {
-		seq_puts(seq, "  sl  local_address  remote_address  st  paths  active  tx_bytes  rx_bytes\n");
-		return 0;
-	}
-
-	sk = conn->sk;
-	if (!sk)
-		return 0;
-
-	inet = inet_sk(sk);
-
-	/* Count active paths */
-	list_for_each_entry(path, &conn->paths, list) {
-		if (path->state == TQUIC_PATH_ACTIVE)
-			path_count++;
-	}
-
-	seq_printf(seq, "%4d: %pI4:%04X %pI4:%04X %02X  %5d  %5d  %8llu  %8llu\n",
-		   0, /* slot */
-		   &inet->inet_saddr, ntohs(inet->inet_sport),
-		   &inet->inet_daddr, ntohs(inet->inet_dport),
-		   sk->sk_state,
-		   conn->num_paths,
-		   path_count,
-		   conn->stats.tx_bytes,
-		   conn->stats.rx_bytes);
-
-	return 0;
-}
-
-static void *tquic_seq_start(struct seq_file *seq, loff_t *pos)
-	__acquires(RCU)
-{
-	rcu_read_lock();
-	if (*pos == 0)
-		return SEQ_START_TOKEN;
-	/* TODO: Return actual connection at position */
-	return NULL;
-}
-
-static void *tquic_seq_next(struct seq_file *seq, void *v, loff_t *pos)
-{
-	(*pos)++;
-	/* TODO: Return next connection */
-	return NULL;
-}
-
-static void tquic_seq_stop(struct seq_file *seq, void *v)
-	__releases(RCU)
-{
-	rcu_read_unlock();
-}
-
-static const struct seq_operations tquic_seq_ops = {
-	.start	= tquic_seq_start,
-	.next	= tquic_seq_next,
-	.stop	= tquic_seq_stop,
-	.show	= tquic_seq_show,
-};
-#endif /* CONFIG_PROC_FS */
 
 /*
  * Module initialization
  */
-static int __init tquic_diag_init(void)
+int __init tquic_diag_init(void)
 {
-	int err;
-
-	err = inet_diag_register(&tquic_diag_handler);
-	if (err)
-		return err;
-
-#ifdef CONFIG_PROC_FS
-	if (!proc_create_net("tquic_connections", 0444, init_net.proc_net,
-			     &tquic_seq_ops, sizeof(struct seq_net_private))) {
-		inet_diag_unregister(&tquic_diag_handler);
-		return -ENOMEM;
-	}
-#endif
-
-	pr_info("TQUIC: socket diagnostics registered\n");
-	return 0;
+	return inet_diag_register(&tquic_diag_handler);
 }
 
-static void __exit tquic_diag_exit(void)
+void __exit tquic_diag_exit(void)
 {
-#ifdef CONFIG_PROC_FS
-	remove_proc_entry("tquic_connections", init_net.proc_net);
-#endif
 	inet_diag_unregister(&tquic_diag_handler);
-	pr_info("TQUIC: socket diagnostics unregistered\n");
 }
-
-module_init(tquic_diag_init);
-module_exit(tquic_diag_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Linux Foundation");
 MODULE_DESCRIPTION("TQUIC socket monitoring via SOCK_DIAG");
-MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_NETLINK, NETLINK_SOCK_DIAG, 2-17 /* AF_INET - IPPROTO_UDP */);
+/*
+ * Per RESEARCH.md pitfall #4: MODULE_ALIAS enables auto-loading
+ * when ss queries IPPROTO_TQUIC.
+ * Format: AF_INET (2) - IPPROTO_TQUIC (263)
+ */
+MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_NETLINK, NETLINK_SOCK_DIAG, 2-263);

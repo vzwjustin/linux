@@ -37,6 +37,9 @@
 #include <net/netns/smc.h>
 #include <net/netns/bpf.h>
 #include <net/netns/mctp.h>
+#if IS_ENABLED(CONFIG_TQUIC)
+#include <net/netns/tquic.h>
+#endif
 #include <net/net_trackers.h>
 #include <linux/ns_common.h>
 #include <linux/idr.h>
@@ -191,6 +194,9 @@ struct net {
 	struct sock		*diag_nlsk;
 #if IS_ENABLED(CONFIG_SMC)
 	struct netns_smc	smc;
+#endif
+#if IS_ENABLED(CONFIG_TQUIC)
+	struct netns_tquic	tquic;
 #endif
 #ifdef CONFIG_DEBUG_NET_SMALL_RTNL
 	/* Move to a better place when the config guard is removed. */

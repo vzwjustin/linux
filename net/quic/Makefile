@@ -1,4 +1,7 @@
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Makefile for QUIC
+#
 
 obj-$(CONFIG_QUIC) += quic.o
 
@@ -8,9 +11,19 @@ quic-y := \
 	stream.o \
 	packet.o \
 	crypto.o \
-	socket.o
-
-quic-$(CONFIG_TQUIC) += \
-	tquic_path.o \
-	tquic_scheduler.o \
-	tquic_netlink.o
+	cong.o \
+	flow.o \
+	loss.o \
+	path.o \
+	timer.o \
+	ack.o \
+	offload.o \
+	output.o \
+	tquic_bonding.o \
+	tquic_reorder.o \
+	tquic_failover.o \
+	sched_minrtt.o \
+	sched_aggregate.o \
+	sched_weighted.o \
+	sched_blest.o \
+	sched_ecf.o

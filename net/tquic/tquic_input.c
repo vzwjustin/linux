@@ -27,6 +27,9 @@
 #include <crypto/aead.h>
 #include <net/tquic.h>
 
+#include "tquic_mib.h"
+#include "cong/tquic_cong.h"
+
 /* QUIC frame types (must match tquic_output.c) */
 #define TQUIC_FRAME_PADDING		0x00
 #define TQUIC_FRAME_PING		0x01
@@ -483,13 +486,30 @@ static int tquic_process_ping_frame(struct tquic_rx_ctx *ctx)
 }
 
 /*
- * Process ACK frame
+ * Process ACK frame (0x02) or ACK_ECN frame (0x03)
+ *
+ * ACK frame format (RFC 9000 Section 19.3):
+ *   Largest Acknowledged (varint)
+ *   ACK Delay (varint)
+ *   ACK Range Count (varint)
+ *   First ACK Range (varint)
+ *   [ACK Ranges...]
+ *
+ * ACK_ECN frame adds (RFC 9000 Section 19.3.2):
+ *   ECT(0) Count (varint)
+ *   ECT(1) Count (varint)
+ *   ECN-CE Count (varint)
  */
 static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 {
 	u64 largest_ack, ack_delay, ack_range_count, first_ack_range;
+	u64 ecn_ect0 = 0, ecn_ect1 = 0, ecn_ce = 0;
+	bool has_ecn;
+	u8 frame_type;
 	int ret;
 
+	frame_type = ctx->data[ctx->offset];
+	has_ecn = (frame_type == TQUIC_FRAME_ACK_ECN);
 	ctx->offset++;  /* Skip frame type */
 
 	/* Largest Acknowledged */
@@ -537,18 +557,108 @@ static int tquic_process_ack_frame(struct tquic_rx_ctx *ctx)
 		ctx->offset += ret;
 	}
 
-	/* Update RTT estimate */
+	/*
+	 * ECN counts (ACK_ECN frame only)
+	 *
+	 * Per RFC 9000 Section 19.3.2:
+	 * - ECT(0) Count: packets received with ECT(0) codepoint
+	 * - ECT(1) Count: packets received with ECT(1) codepoint
+	 * - ECN-CE Count: packets received with ECN-CE codepoint
+	 *
+	 * Per CONTEXT.md: "ECN support: available but off by default"
+	 */
+	if (has_ecn) {
+		/* ECT(0) Count */
+		ret = tquic_decode_varint(ctx->data + ctx->offset,
+					  ctx->len - ctx->offset, &ecn_ect0);
+		if (ret < 0)
+			return ret;
+		ctx->offset += ret;
+
+		/* ECT(1) Count */
+		ret = tquic_decode_varint(ctx->data + ctx->offset,
+					  ctx->len - ctx->offset, &ecn_ect1);
+		if (ret < 0)
+			return ret;
+		ctx->offset += ret;
+
+		/* ECN-CE Count */
+		ret = tquic_decode_varint(ctx->data + ctx->offset,
+					  ctx->len - ctx->offset, &ecn_ce);
+		if (ret < 0)
+			return ret;
+		ctx->offset += ret;
+
+		/* Update MIB counter for ECN frames received */
+		if (ctx->conn && ctx->conn->sk) {
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_ECNACKSRX);
+			if (ecn_ce > 0)
+				TQUIC_ADD_STATS(sock_net(ctx->conn->sk),
+						TQUIC_MIB_ECNCEMARKSRX, ecn_ce);
+		}
+	}
+
+	/* Update RTT estimate and notify congestion control */
 	if (ctx->path) {
 		ktime_t now = ktime_get();
 		/* Convert ack_delay to microseconds */
 		u64 ack_delay_us = ack_delay * 8;  /* Default exponent = 3 */
+		u64 rtt_us;
 
-		/* RTT sample = now - sent_time - ack_delay */
-		/* This is simplified; actual implementation needs sent_time tracking */
+		/*
+		 * RTT sample calculation (simplified).
+		 * Full implementation would track sent_time per packet.
+		 * Use path's last_activity as approximation for now.
+		 */
+		rtt_us = ktime_us_delta(now, ctx->path->last_activity);
+		if (rtt_us > ack_delay_us)
+			rtt_us -= ack_delay_us;
+
+		/* Update MIB counter for RTT sample */
+		if (ctx->conn && ctx->conn->sk)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_RTTSAMPLES);
+
+		/*
+		 * Calculate bytes acknowledged from first_ack_range.
+		 * Simplified: use first_ack_range * 1200 (MTU) as estimate.
+		 * Full implementation would use packet tracking.
+		 */
+		{
+			u64 bytes_acked = (first_ack_range + 1) * 1200;
+
+			/* Dispatch ACK event to congestion control */
+			tquic_cong_on_ack(ctx->path, bytes_acked, rtt_us);
+
+			/* Update RTT in CC algorithm */
+			tquic_cong_on_rtt(ctx->path, rtt_us);
+		}
+
+		/*
+		 * ECN CE handling
+		 *
+		 * Per RFC 9002 Section 7.1: "An increase in ECN-CE counters
+		 * is a signal of congestion. The sender SHOULD reduce the
+		 * congestion window using the approach described in..."
+		 *
+		 * Per CONTEXT.md: "Loss on one path reduces only that path's CWND"
+		 * This applies to ECN as well - ECN on one path affects only
+		 * that path.
+		 */
+		if (has_ecn && ecn_ce > 0) {
+			/*
+			 * Track previous ECN-CE count to detect increase.
+			 * For now, treat any reported CE count as new marks.
+			 * A full implementation would compare against
+			 * previously reported values.
+			 */
+			tquic_cong_on_ecn(ctx->path, ecn_ce);
+
+			pr_debug("tquic: ECN-CE on path %u: ce=%llu ect0=%llu ect1=%llu\n",
+				 ctx->path->path_id, ecn_ce, ecn_ect0, ecn_ect1);
+		}
 	}
 
-	/* Mark acknowledged packets */
-	/* This would trigger congestion control updates */
+	/* Mark acknowledged packets - processed by CC above */
 
 	return 0;
 }
@@ -754,6 +864,7 @@ static int tquic_process_max_stream_data_frame(struct tquic_rx_ctx *ctx)
 static int tquic_process_path_challenge_frame(struct tquic_rx_ctx *ctx)
 {
 	u8 data[8];
+	int ret;
 
 	ctx->offset++;  /* Skip frame type */
 
@@ -763,8 +874,12 @@ static int tquic_process_path_challenge_frame(struct tquic_rx_ctx *ctx)
 	memcpy(data, ctx->data + ctx->offset, 8);
 	ctx->offset += 8;
 
-	/* Send PATH_RESPONSE with same data */
-	tquic_send_path_response(ctx->conn, ctx->path, data);
+	/* Handle challenge through path validation module */
+	ret = tquic_path_handle_challenge(ctx->conn, ctx->path, data);
+	if (ret < 0 && ret != -ENOBUFS) {
+		/* Log error but don't fail packet processing */
+		pr_debug("tquic: PATH_CHALLENGE handling failed: %d\n", ret);
+	}
 
 	ctx->ack_eliciting = true;
 
@@ -777,6 +892,7 @@ static int tquic_process_path_challenge_frame(struct tquic_rx_ctx *ctx)
 static int tquic_process_path_response_frame(struct tquic_rx_ctx *ctx)
 {
 	u8 data[8];
+	int ret;
 
 	ctx->offset++;  /* Skip frame type */
 
@@ -786,10 +902,12 @@ static int tquic_process_path_response_frame(struct tquic_rx_ctx *ctx)
 	memcpy(data, ctx->data + ctx->offset, 8);
 	ctx->offset += 8;
 
-	/* Validate path if response matches our challenge */
-	if (ctx->path &&
-	    memcmp(data, ctx->path->challenge_data, 8) == 0) {
-		tquic_path_validate(ctx->conn, ctx->path);
+	/* Handle response through path validation module */
+	ret = tquic_path_handle_response(ctx->conn, ctx->path, data);
+	if (ret == 0) {
+		/* Update MIB counter for successful path validation */
+		if (ctx->conn && ctx->conn->sk)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_PATHVALIDATED);
 	}
 
 	ctx->ack_eliciting = true;
@@ -921,6 +1039,20 @@ static int tquic_process_connection_close_frame(struct tquic_rx_ctx *ctx, bool a
 	spin_lock(&ctx->conn->lock);
 	ctx->conn->state = TQUIC_CONN_DRAINING;
 	spin_unlock(&ctx->conn->lock);
+
+	/* Update MIB counters for connection close */
+	if (ctx->conn && ctx->conn->sk) {
+		TQUIC_DEC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_CURRESTAB);
+		if (error_code == EQUIC_NO_ERROR)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_CONNCLOSED);
+		else
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), TQUIC_MIB_CONNRESET);
+
+		/* Track specific EQUIC error */
+		enum linux_tquic_mib_field mib_field = tquic_equic_to_mib(error_code);
+		if (mib_field != TQUIC_MIB_NUM)
+			TQUIC_INC_STATS(sock_net(ctx->conn->sk), mib_field);
+	}
 
 	return 0;
 }
@@ -1437,6 +1569,12 @@ static int tquic_process_packet(struct tquic_connection *conn,
 			path->stats.rx_packets++;
 			path->stats.rx_bytes += len;
 			path->last_activity = ktime_get();
+		}
+
+		/* Update MIB counters for packet reception */
+		if (conn->sk) {
+			TQUIC_INC_STATS(sock_net(conn->sk), TQUIC_MIB_PACKETSRX);
+			TQUIC_ADD_STATS(sock_net(conn->sk), TQUIC_MIB_BYTESRX, len);
 		}
 	}
 

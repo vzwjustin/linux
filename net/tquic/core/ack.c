@@ -1261,7 +1261,34 @@ int tquic_on_ack_received(struct tquic_loss_state *loss, int pn_space,
 	 */
 	list_for_each_entry_safe(pkt, tmp, &lost_packets, list) {
 		list_del(&pkt->list);
-		/* TODO: Queue stream data for retransmission */
+
+		/*
+		 * Queue stream data for retransmission.
+		 * If this packet contained STREAM frames, we need to
+		 * retransmit the stream data on a new packet.
+		 */
+		if (pkt->frames & TQUIC_FRAME_MASK_STREAM) {
+			struct tquic_stream *stream;
+			u64 offset = pkt->stream_offset;
+			u32 len = pkt->stream_len;
+
+			/*
+			 * Mark stream data as needing retransmission.
+			 * The output path will pick this up and create
+			 * new packets with the lost data.
+			 */
+			stream = tquic_conn_find_stream(conn, pkt->stream_id);
+			if (stream && stream->state == TQUIC_STREAM_OPEN) {
+				/*
+				 * Set the retransmit flag so the output
+				 * path knows to resend this range.
+				 */
+				stream->send_offset = min(stream->send_offset, offset);
+				pr_debug("tquic: queued stream %llu retransmit at %llu\n",
+					 pkt->stream_id, offset);
+			}
+		}
+
 		tquic_sent_packet_free(pkt);
 	}
 
@@ -1397,10 +1424,24 @@ static void tquic_loss_detection_timeout(struct timer_list *t)
 	spin_unlock(&loss->lock);
 
 	/*
-	 * Send 1-2 probe packets. In a full implementation, this would
+	 * Send 1-2 probe packets. RFC 9002 Section 6.2.4 says we should
 	 * send ACK-eliciting packets (ideally with retransmittable data).
+	 *
+	 * We send PING frames on the appropriate packet number space.
 	 */
-	/* TODO: tquic_send_probe_packets(conn, path); */
+	{
+		u8 ping_frame[1] = { 0x01 };  /* PING frame type */
+		int probes_to_send = 2;
+		int i;
+
+		for (i = 0; i < probes_to_send; i++) {
+			/* Build and send a PING packet for each probe */
+			if (path) {
+				tquic_xmit(conn, NULL, ping_frame, 1, false);
+				pr_debug("tquic: sent PTO probe %d\n", i + 1);
+			}
+		}
+	}
 
 	tquic_set_loss_detection_timer(loss, conn);
 	return;

@@ -1274,6 +1274,239 @@ static struct proc_dir_entry *coupled_proc_dir;
 
 /*
  * =============================================================================
+ * Connection-Level Coupled CC API
+ * =============================================================================
+ *
+ * These functions provide the connection-level API for coupled CC that is
+ * called by tquic_cong.c coordination layer.
+ *
+ * Per CONTEXT.md: "Coupled CC is opt-in via sysctl/sockopt"
+ * Per RESEARCH.md: "OLIA as default" coupled algorithm
+ */
+
+/*
+ * tquic_coupled_create - Create coupled CC state for a connection
+ * @conn: Connection to create coupled state for
+ * @algo: Coupled algorithm (OLIA, LIA, or BALIA)
+ *
+ * Allocates and initializes connection-level coupled CC state.
+ * OLIA is the default per RESEARCH.md recommendation.
+ *
+ * Return: Pointer to coupled state, or NULL on failure
+ */
+struct tquic_coupled_state *tquic_coupled_create(struct tquic_connection *conn,
+						  enum tquic_coupled_algo algo)
+{
+	struct coupled_state *state;
+
+	if (!conn)
+		return NULL;
+
+	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	if (!state)
+		return NULL;
+
+	state->conn = conn;
+
+	/* Map external enum to internal enum */
+	switch (algo) {
+	case TQUIC_COUPLED_LIA:
+		state->algo = COUPLED_ALGO_LIA;
+		break;
+	case TQUIC_COUPLED_BALIA:
+		state->algo = COUPLED_ALGO_BALIA;
+		break;
+	case TQUIC_COUPLED_OLIA:
+	default:
+		state->algo = COUPLED_ALGO_OLIA;  /* Default to OLIA */
+		break;
+	}
+
+	state->global_alpha = COUPLED_SCALE;
+	state->use_cubic = coupled_use_cubic;
+	state->use_bbr = coupled_use_bbr;
+
+	INIT_LIST_HEAD(&state->subflows);
+	spin_lock_init(&state->lock);
+
+	state->sbd.check_interval = 1000;  /* 1 second */
+
+	pr_info("tquic_coupled: created coupled state (algo=%d)\n", state->algo);
+
+	return (struct tquic_coupled_state *)state;
+}
+EXPORT_SYMBOL_GPL(tquic_coupled_create);
+
+/*
+ * tquic_coupled_destroy - Destroy coupled CC state
+ * @cstate: Coupled state to destroy
+ *
+ * Releases all resources associated with coupled CC state.
+ * All paths should be detached before calling this.
+ */
+void tquic_coupled_destroy(struct tquic_coupled_state *cstate)
+{
+	struct coupled_state *state = (struct coupled_state *)cstate;
+	struct coupled_subflow *sf, *tmp;
+
+	if (!state)
+		return;
+
+	/* Remove any remaining subflows */
+	spin_lock(&state->lock);
+	list_for_each_entry_safe(sf, tmp, &state->subflows, list) {
+		list_del(&sf->list);
+		kfree(sf);
+	}
+	spin_unlock(&state->lock);
+
+	/* Free correlation matrix if allocated */
+	kfree(state->sbd.corr_matrix);
+	kfree(state);
+
+	pr_info("tquic_coupled: destroyed coupled state\n");
+}
+EXPORT_SYMBOL_GPL(tquic_coupled_destroy);
+
+/*
+ * tquic_coupled_attach_path - Attach a path to coupled CC
+ * @cstate: Coupled CC state
+ * @path: Path to attach
+ *
+ * Creates a subflow for the path and integrates it into coupled CC.
+ * The path will participate in coupled CWND coordination.
+ *
+ * Return: 0 on success, -errno on failure
+ */
+int tquic_coupled_attach_path(struct tquic_coupled_state *cstate,
+			      struct tquic_path *path)
+{
+	struct coupled_state *state = (struct coupled_state *)cstate;
+	struct coupled_subflow *sf;
+
+	if (!state || !path)
+		return -EINVAL;
+
+	/* Check if already attached */
+	sf = coupled_find_subflow(state, path->path_id);
+	if (sf) {
+		pr_debug("tquic_coupled: path %u already attached\n",
+			 path->path_id);
+		return -EEXIST;
+	}
+
+	/* Add subflow for this path */
+	sf = coupled_add_subflow(state, path);
+	if (!sf)
+		return -ENOMEM;
+
+	/* Update global alpha with new subflow */
+	coupled_update_alpha(state);
+
+	pr_debug("tquic_coupled: attached path %u\n", path->path_id);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_coupled_attach_path);
+
+/*
+ * tquic_coupled_detach_path - Detach a path from coupled CC
+ * @cstate: Coupled CC state
+ * @path: Path to detach
+ *
+ * Removes the path's subflow from coupled CC.
+ * The path will no longer participate in coupled CWND coordination.
+ */
+void tquic_coupled_detach_path(struct tquic_coupled_state *cstate,
+			       struct tquic_path *path)
+{
+	struct coupled_state *state = (struct coupled_state *)cstate;
+	struct coupled_subflow *sf;
+
+	if (!state || !path)
+		return;
+
+	sf = coupled_find_subflow(state, path->path_id);
+	if (!sf) {
+		pr_debug("tquic_coupled: path %u not attached\n", path->path_id);
+		return;
+	}
+
+	coupled_remove_subflow(state, sf);
+
+	/* Update alpha without this subflow */
+	if (state->num_subflows > 0)
+		coupled_update_alpha(state);
+
+	pr_debug("tquic_coupled: detached path %u\n", path->path_id);
+}
+EXPORT_SYMBOL_GPL(tquic_coupled_detach_path);
+
+/*
+ * tquic_coupled_on_ack_ext - External ACK handler for coupled CC
+ * @cstate: Coupled CC state
+ * @path: Path that received the ACK
+ * @bytes_acked: Number of bytes acknowledged
+ * @rtt_us: RTT sample in microseconds
+ *
+ * Called by the CC framework to process ACK events through coupled CC.
+ * This coordinates CWND updates across all paths.
+ */
+void tquic_coupled_on_ack_ext(struct tquic_coupled_state *cstate,
+			      struct tquic_path *path,
+			      u64 bytes_acked, u64 rtt_us)
+{
+	struct coupled_state *state = (struct coupled_state *)cstate;
+	struct coupled_subflow *sf;
+
+	if (!state || !path)
+		return;
+
+	sf = coupled_find_subflow(state, path->path_id);
+	if (!sf) {
+		pr_debug("tquic_coupled: ACK on unattached path %u\n",
+			 path->path_id);
+		return;
+	}
+
+	/* Delegate to internal ACK handler */
+	coupled_on_ack(sf, bytes_acked, rtt_us);
+}
+EXPORT_SYMBOL_GPL(tquic_coupled_on_ack_ext);
+
+/*
+ * tquic_coupled_on_loss_ext - External loss handler for coupled CC
+ * @cstate: Coupled CC state
+ * @path: Path that experienced loss
+ * @bytes_lost: Number of bytes lost
+ *
+ * Called by the CC framework to process loss events through coupled CC.
+ * Per CONTEXT.md: "Loss on one path reduces only that path's CWND"
+ * Coupled CC redistributes traffic to other paths but does not reduce their CWND.
+ */
+void tquic_coupled_on_loss_ext(struct tquic_coupled_state *cstate,
+			       struct tquic_path *path,
+			       u64 bytes_lost)
+{
+	struct coupled_state *state = (struct coupled_state *)cstate;
+	struct coupled_subflow *sf;
+
+	if (!state || !path)
+		return;
+
+	sf = coupled_find_subflow(state, path->path_id);
+	if (!sf) {
+		pr_debug("tquic_coupled: loss on unattached path %u\n",
+			 path->path_id);
+		return;
+	}
+
+	/* Delegate to internal loss handler - only affects this path's CWND */
+	coupled_on_loss(sf, bytes_lost);
+}
+EXPORT_SYMBOL_GPL(tquic_coupled_on_loss_ext);
+
+/*
+ * =============================================================================
  * Module Init/Exit
  * =============================================================================
  */

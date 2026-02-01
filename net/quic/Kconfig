@@ -1,76 +1,56 @@
 # SPDX-License-Identifier: GPL-2.0-only
+#
+# QUIC configuration
+#
 
 menuconfig QUIC
-	tristate "QUIC protocol support"
+	tristate "QUIC: A UDP-Based Multiplexed and Secure Transport"
 	depends on INET
-	select CRYPTO
+	depends on CRYPTO
+	depends on CRYPTO_AEAD
 	select CRYPTO_AES
 	select CRYPTO_GCM
+	select CRYPTO_CHACHA20POLY1305
 	select CRYPTO_SHA256
-	select CRYPTO_HMAC
+	select CRYPTO_SHA512
 	help
 	  QUIC (RFC 9000) is a UDP-based multiplexed and secure transport
-	  protocol. This option enables QUIC protocol support in the kernel.
+	  protocol designed for HTTP/3 and general-purpose use. It provides
+	  built-in encryption using TLS 1.3, multiplexed streams to avoid
+	  head-of-line blocking, and connection migration support.
+
+	  This implementation provides kernel-level QUIC support that can be
+	  used by applications through the socket API, similar to how TCP
+	  sockets work. Key features include:
+
+	    - Multiplexed streams within a single connection
+	    - Low-latency connection establishment (0-RTT and 1-RTT)
+	    - Connection migration and multi-path support
+	    - Congestion control and loss recovery
+	    - Hardware offload support for improved performance
+
+	  The userspace handshake is performed via the handshake upcall
+	  mechanism, allowing the kernel to handle data transfer while
+	  userspace libraries manage the TLS handshake.
+
+	  To compile this protocol support as a module, choose M here: the
+	  module will be called quic.
 
 	  If unsure, say N.
 
 if QUIC
 
-config TQUIC
-	bool "TQUIC multi-path support for WAN bonding"
-	default y
-	help
-	  Enable TQUIC extensions for multi-path transmission over multiple
-	  WAN interfaces. This allows bonding multiple network connections
-	  (e.g., Ethernet + Cellular) for increased bandwidth and reliability.
-
-	  If unsure, say Y.
-
-config TQUIC_SCHEDULER_ROUNDROBIN
-	bool "Round-robin scheduler"
-	default y
-	depends on TQUIC
-	help
-	  Round-robin packet scheduler distributes packets evenly across
-	  all available paths.
-
-config TQUIC_SCHEDULER_WEIGHTED
-	bool "Weighted scheduler"
-	default y
-	depends on TQUIC
-	help
-	  Weighted scheduler distributes packets based on configured
-	  weights for each path.
-
-config TQUIC_SCHEDULER_LOWLATENCY
-	bool "Low-latency scheduler"
-	default y
-	depends on TQUIC
-	help
-	  Low-latency scheduler always selects the path with the
-	  lowest measured RTT.
-
-config TQUIC_SCHEDULER_REDUNDANT
-	bool "Redundant scheduler"
-	default y
-	depends on TQUIC
-	help
-	  Redundant scheduler sends packets on multiple paths
-	  for maximum reliability.
-
-config TQUIC_SCHEDULER_ADAPTIVE
-	bool "Adaptive scheduler"
-	default y
-	depends on TQUIC
-	help
-	  Adaptive scheduler dynamically adjusts path selection
-	  based on current network conditions.
-
 config QUIC_DEBUG
-	bool "QUIC debugging"
-	depends on QUIC
+	bool "QUIC debugging messages"
 	help
-	  Enable QUIC debugging output. This creates entries in debugfs
-	  for inspecting QUIC connection state.
+	  Enable debug output for the QUIC protocol implementation. This
+	  option adds verbose logging of protocol state transitions, packet
+	  processing, and internal events to the kernel log.
+
+	  This is useful for developers working on the QUIC implementation
+	  or for diagnosing protocol-level issues, but adds overhead and
+	  should not be enabled in production systems.
+
+	  If unsure, say N.
 
 endif # QUIC

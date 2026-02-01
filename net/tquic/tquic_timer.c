@@ -22,6 +22,7 @@
 #include <linux/refcount.h>
 #include <linux/completion.h>
 #include <net/tquic.h>
+#include "cong/tquic_cong.h"
 
 /* Timer configuration constants (in microseconds unless noted) */
 #define TQUIC_TIMER_GRANULARITY_US	1000		/* 1ms granularity */
@@ -834,11 +835,10 @@ static int tquic_detect_lost_packets(struct tquic_timer_state *ts, int pn_space)
 				spin_unlock(&rs->lock);
 			}
 
-			/* Notify congestion controller */
-			if (ts->conn->active_path && ts->conn->active_path->cong) {
-				struct tquic_cong_ops *cong_ops;
-				/* Call congestion control loss handler */
-				cong_ops = NULL; /* Would be looked up from registered ops */
+			/* Notify congestion controller of loss */
+			if (ts->conn->active_path) {
+				tquic_cong_on_loss(ts->conn->active_path,
+						   pkt->sent_bytes);
 			}
 
 			pr_debug("tquic_timer: packet %llu declared lost\n",

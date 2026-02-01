@@ -382,3 +382,4 @@ module_exit(tquic_westwood_module_exit);
 MODULE_DESCRIPTION("TQUIC Westwood+ Congestion Control");
 MODULE_AUTHOR("Linux Foundation");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("tquic-cong-westwood");

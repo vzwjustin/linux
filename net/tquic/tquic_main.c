@@ -25,6 +25,7 @@
 #include <net/udp.h>
 #include <net/udp_tunnel.h>
 #include <net/tquic.h>
+#include <net/tquic_pm.h>
 
 /* Module info */
 MODULE_AUTHOR("Linux Foundation");
@@ -104,10 +105,12 @@ struct tquic_connection *tquic_conn_create(struct sock *sk, gfp_t gfp)
 	/* Set default idle timeout */
 	conn->idle_timeout = TQUIC_DEFAULT_IDLE_TIMEOUT;
 
-	/* Initialize timers */
-	timer_setup(&conn->idle_timer, NULL, 0);
-	timer_setup(&conn->ack_timer, NULL, 0);
-	timer_setup(&conn->loss_timer, NULL, 0);
+	/* Initialize timer state (manages idle, ack, loss, and PTO timers) */
+	conn->timer_state = tquic_timer_state_alloc(conn);
+	if (!conn->timer_state) {
+		kmem_cache_free(tquic_conn_cache, conn);
+		return NULL;
+	}
 
 	/* Generate local connection ID */
 	get_random_bytes(conn->scid.id, TQUIC_DEFAULT_CID_LEN);
@@ -139,10 +142,9 @@ void tquic_conn_destroy(struct tquic_connection *conn)
 	/* Remove from global table */
 	rhashtable_remove_fast(&tquic_conn_table, &conn->node, tquic_conn_params);
 
-	/* Cancel timers */
-	del_timer_sync(&conn->idle_timer);
-	del_timer_sync(&conn->ack_timer);
-	del_timer_sync(&conn->loss_timer);
+	/* Free timer state (cancels all timers) */
+	if (conn->timer_state)
+		tquic_timer_state_free(conn->timer_state);
 
 	/* Free all paths */
 	list_for_each_entry_safe(path, tmp_path, &conn->paths, list) {
@@ -186,6 +188,8 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 	if (!path)
 		return -ENOMEM;
 
+	/* Set back-pointer to parent connection */
+	path->conn = conn;
 	path->state = TQUIC_PATH_PENDING;
 	path->path_id = conn->num_paths;
 	path->mtu = 1200;  /* Initial conservative MTU */
@@ -204,10 +208,19 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 	path->local_cid.len = TQUIC_DEFAULT_CID_LEN;
 	path->local_cid.seq_num = conn->num_paths;
 
-	/* Setup validation timer */
-	timer_setup(&path->validation_timer, NULL, 0);
+	/* Setup validation timer (use new validation.timer) */
+	timer_setup(&path->validation.timer, tquic_path_validation_timeout, 0);
+	timer_setup(&path->validation_timer, NULL, 0); /* Keep legacy for compatibility */
 
-	/* Generate challenge data for path validation */
+	/* Initialize validation state */
+	path->validation.challenge_pending = false;
+	path->validation.retries = 0;
+
+	/* Initialize response queue */
+	skb_queue_head_init(&path->response.queue);
+	atomic_set(&path->response.count, 0);
+
+	/* Legacy challenge data - still used by some code */
 	get_random_bytes(path->challenge_data, sizeof(path->challenge_data));
 
 	spin_lock(&conn->lock);
@@ -220,6 +233,11 @@ int tquic_conn_add_path(struct tquic_connection *conn,
 	spin_unlock(&conn->lock);
 
 	pr_debug("tquic: added path %u to connection\n", path->path_id);
+
+	/* Start validation immediately for non-backup paths */
+	if (tquic_path_start_validation(conn, path) < 0)
+		pr_warn("tquic: failed to start validation for path %u\n",
+			path->path_id);
 
 	return path->path_id;
 }
@@ -257,7 +275,14 @@ int tquic_conn_remove_path(struct tquic_connection *conn, u32 path_id)
 	if (!found)
 		return -ENOENT;
 
+	/* Stop validation timer */
+	del_timer_sync(&path->validation.timer);
 	del_timer_sync(&path->validation_timer);
+
+	/* Flush response queue */
+	skb_queue_purge(&path->response.queue);
+	atomic_set(&path->response.count, 0);
+
 	kmem_cache_free(tquic_path_cache, path);
 
 	pr_debug("tquic: removed path %u from connection\n", path_id);
@@ -295,6 +320,113 @@ void tquic_conn_migrate(struct tquic_connection *conn, struct tquic_path *new_pa
 	spin_unlock(&conn->lock);
 }
 EXPORT_SYMBOL_GPL(tquic_conn_migrate);
+
+/*
+ * Path Manager Connection Lifecycle
+ */
+
+/**
+ * tquic_pm_conn_init - Initialize path manager for connection
+ * @conn: Connection to initialize PM for
+ *
+ * Called when connection is established. Selects PM type based on
+ * sysctl configuration and initializes PM state. For kernel PM with
+ * auto_discover enabled, triggers initial path discovery.
+ *
+ * Returns 0 on success, negative error on failure.
+ */
+int tquic_pm_conn_init(struct tquic_connection *conn)
+{
+	struct net *net = sock_net(conn->sk);
+	struct tquic_pm_pernet *pernet;
+	struct tquic_pm_ops *ops;
+	struct tquic_pm_state *pm_state;
+	int ret;
+
+	if (!conn || !conn->sk)
+		return -EINVAL;
+
+	pernet = tquic_pm_get_pernet(net);
+	if (!pernet)
+		return -ENOENT;
+
+	/* Get PM ops for current type */
+	ops = tquic_pm_get_type(net);
+	if (!ops) {
+		pr_warn("TQUIC: No PM ops registered for type %u\n",
+			pernet->pm_type);
+		return -ENOENT;
+	}
+
+	/* Allocate PM state */
+	pm_state = kzalloc(sizeof(*pm_state), GFP_KERNEL);
+	if (!pm_state)
+		return -ENOMEM;
+
+	pm_state->ops = ops;
+	pm_state->priv = NULL;
+
+	conn->pm = pm_state;
+
+	/* Generate unique connection token for netlink identification */
+	conn->token = get_random_u32();
+
+	/* Call PM-specific init if available */
+	if (ops->init) {
+		ret = ops->init(net);
+		if (ret < 0) {
+			pr_err("TQUIC: PM init failed: %d\n", ret);
+			kfree(pm_state);
+			conn->pm = NULL;
+			return ret;
+		}
+	}
+
+	/* For kernel PM with auto_discover, trigger initial discovery
+	 * This discovers paths for already-up interfaces with default routes
+	 */
+	if (pernet->pm_type == TQUIC_PM_TYPE_KERNEL &&
+	    pernet->auto_discover) {
+		/* Initial discovery happens via netdevice notifier
+		 * when interfaces are already up. The notifier was
+		 * registered in tquic_pm_kernel_init().
+		 */
+		pr_debug("TQUIC: Kernel PM initialized with auto_discover\n");
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tquic_pm_conn_init);
+
+/**
+ * tquic_pm_conn_release - Clean up path manager state for connection
+ * @conn: Connection to release PM for
+ *
+ * Called when connection is being closed. Releases PM-specific state.
+ */
+void tquic_pm_conn_release(struct tquic_connection *conn)
+{
+	struct tquic_pm_state *pm_state;
+
+	if (!conn || !conn->pm)
+		return;
+
+	pm_state = conn->pm;
+
+	/* Call PM-specific release if available */
+	if (pm_state->ops && pm_state->ops->release && conn->sk) {
+		struct net *net = sock_net(conn->sk);
+		pm_state->ops->release(net);
+	}
+
+	/* Free PM-specific private data if any */
+	if (pm_state->priv)
+		kfree(pm_state->priv);
+
+	kfree(pm_state);
+	conn->pm = NULL;
+}
+EXPORT_SYMBOL_GPL(tquic_pm_conn_release);
 
 /*
  * Stream Management
@@ -618,12 +750,19 @@ static int __init tquic_init(void)
 	if (err)
 		goto err_proc;
 
+	/* Initialize inet_diag handler for ss tool */
+	err = tquic_diag_init();
+	if (err)
+		goto err_diag;
+
 	pr_info("tquic: TQUIC WAN bonding subsystem initialized\n");
 	pr_info("tquic: Default bond mode: %d, scheduler: %s, congestion: %s\n",
 		tquic_default_bond_mode, tquic_default_scheduler, tquic_default_cong);
 
 	return 0;
 
+err_diag:
+	tquic_proc_exit();
 err_proc:
 	tquic_sysctl_exit();
 err_sysctl:
@@ -644,6 +783,7 @@ static void __exit tquic_exit(void)
 {
 	pr_info("tquic: shutting down TQUIC WAN bonding subsystem\n");
 
+	tquic_diag_exit();
 	tquic_proc_exit();
 	tquic_sysctl_exit();
 	tquic_netlink_exit();
