@@ -15,7 +15,6 @@
 # *!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!*!
 
 
-CFLAGS_aha152x.o =   -DAHA152X_STAT -DAUTOCONF
 
 obj-$(CONFIG_PCMCIA)		+= pcmcia/
 
@@ -63,15 +62,8 @@ obj-$(CONFIG_SUN3_SCSI)		+= sun3_scsi.o  sun3_scsi_vme.o
 obj-$(CONFIG_MVME16x_SCSI)	+= 53c700.o	mvme16x_scsi.o
 obj-$(CONFIG_BVME6000_SCSI)	+= 53c700.o	bvme6000_scsi.o
 obj-$(CONFIG_SCSI_SIM710)	+= 53c700.o	sim710.o
-obj-$(CONFIG_SCSI_ADVANSYS)	+= advansys.o
-obj-$(CONFIG_SCSI_BUSLOGIC)	+= BusLogic.o
-obj-$(CONFIG_SCSI_ARCMSR)	+= arcmsr/
-obj-$(CONFIG_SCSI_AHA152X)	+= aha152x.o
-obj-$(CONFIG_SCSI_AHA1542)	+= aha1542.o
-obj-$(CONFIG_SCSI_AHA1740)	+= aha1740.o
 obj-$(CONFIG_SCSI_AIC7XXX)	+= aic7xxx/
 obj-$(CONFIG_SCSI_AIC79XX)	+= aic7xxx/
-obj-$(CONFIG_SCSI_AACRAID)	+= aacraid/
 obj-$(CONFIG_SCSI_AIC94XX)	+= aic94xx/
 obj-$(CONFIG_SCSI_PM8001)	+= pm8001/
 obj-$(CONFIG_SCSI_ISCI)		+= isci/
@@ -82,10 +74,6 @@ obj-$(CONFIG_SCSI_FDOMAIN_ISA)	+= fdomain_isa.o
 obj-$(CONFIG_SCSI_GENERIC_NCR5380) += g_NCR5380.o
 obj-$(CONFIG_SCSI_QLOGIC_FAS)	+= qlogicfas408.o	qlogicfas.o
 obj-$(CONFIG_PCMCIA_QLOGIC)	+= qlogicfas408.o
-obj-$(CONFIG_SCSI_QLOGIC_1280)	+= qla1280.o 
-obj-$(CONFIG_SCSI_QLA_FC)	+= qla2xxx/
-obj-$(CONFIG_SCSI_QLA_ISCSI)	+= libiscsi.o qla4xxx/
-obj-$(CONFIG_SCSI_LPFC)		+= lpfc/
 obj-$(CONFIG_SCSI_EFCT)		+= elx/
 obj-$(CONFIG_SCSI_BFA_FC)	+= bfa/
 obj-$(CONFIG_SCSI_CHELSIO_FCOE)	+= csiostor/
@@ -110,9 +98,6 @@ obj-$(CONFIG_SCSI_MESH)		+= mesh.o
 obj-$(CONFIG_SCSI_MAC53C94)	+= mac53c94.o
 obj-$(CONFIG_SCSI_MYRB)		+= myrb.o
 obj-$(CONFIG_SCSI_MYRS)		+= myrs.o
-obj-$(CONFIG_BLK_DEV_3W_XXXX_RAID) += 3w-xxxx.o
-obj-$(CONFIG_SCSI_3W_9XXX)	+= 3w-9xxx.o
-obj-$(CONFIG_SCSI_3W_SAS)	+= 3w-sas.o
 obj-$(CONFIG_SCSI_PPA)		+= ppa.o
 obj-$(CONFIG_SCSI_IMM)		+= imm.o
 obj-$(CONFIG_JAZZ_ESP)		+= esp_scsi.o	jazz_esp.o

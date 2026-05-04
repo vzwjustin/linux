@@ -117,19 +117,16 @@ source "drivers/usb/storage/Kconfig"
 
 source "drivers/usb/image/Kconfig"
 
-source "drivers/usb/usbip/Kconfig"
 
 endif
 
 comment "USB dual-mode controller drivers"
 
-source "drivers/usb/cdns3/Kconfig"
 
 source "drivers/usb/fotg210/Kconfig"
 
 source "drivers/usb/mtu3/Kconfig"
 
-source "drivers/usb/musb/Kconfig"
 
 source "drivers/usb/dwc3/Kconfig"
 
@@ -147,7 +144,6 @@ source "drivers/usb/serial/Kconfig"
 
 source "drivers/usb/misc/Kconfig"
 
-source "drivers/usb/atm/Kconfig"
 
 endif # USB
 

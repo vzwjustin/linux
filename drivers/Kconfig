@@ -45,9 +45,7 @@ source "drivers/ata/Kconfig"
 
 source "drivers/md/Kconfig"
 
-source "drivers/target/Kconfig"
 
-source "drivers/message/fusion/Kconfig"
 
 
 source "drivers/net/Kconfig"
