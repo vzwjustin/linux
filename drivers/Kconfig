@@ -91,9 +91,7 @@ source "drivers/thermal/Kconfig"
 
 source "drivers/watchdog/Kconfig"
 
-source "drivers/ssb/Kconfig"
 
-source "drivers/bcma/Kconfig"
 
 source "drivers/mfd/Kconfig"
 
@@ -112,7 +110,6 @@ source "drivers/mmc/Kconfig"
 
 source "drivers/ufs/Kconfig"
 
-source "drivers/memstick/Kconfig"
 
 source "drivers/leds/Kconfig"
 
@@ -144,11 +141,8 @@ source "drivers/hv/Kconfig"
 
 source "drivers/xen/Kconfig"
 
-source "drivers/greybus/Kconfig"
 
-source "drivers/comedi/Kconfig"
 
-source "drivers/gpib/Kconfig"
 
 source "drivers/platform/Kconfig"
 
@@ -185,7 +179,6 @@ source "drivers/pwm/Kconfig"
 
 source "drivers/irqchip/Kconfig"
 
-source "drivers/ipack/Kconfig"
 
 source "drivers/reset/Kconfig"
 
@@ -213,7 +206,6 @@ source "drivers/hwtracing/Kconfig"
 
 source "drivers/fpga/Kconfig"
 
-source "drivers/fsi/Kconfig"
 
 source "drivers/tee/Kconfig"
 
@@ -221,7 +213,6 @@ source "drivers/mux/Kconfig"
 
 source "drivers/opp/Kconfig"
 
-source "drivers/siox/Kconfig"
 
 source "drivers/slimbus/Kconfig"
 
@@ -229,13 +220,11 @@ source "drivers/interconnect/Kconfig"
 
 source "drivers/counter/Kconfig"
 
-source "drivers/most/Kconfig"
 
 source "drivers/peci/Kconfig"
 
 source "drivers/hte/Kconfig"
 
-source "drivers/cdx/Kconfig"
 
 source "drivers/resctrl/Kconfig"
 
