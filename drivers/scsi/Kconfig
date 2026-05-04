@@ -1091,8 +1091,6 @@ config SCSI_QLOGICPTI
 	  To compile this driver as a module, choose M here: the
 	  module will be called qlogicpti.
 
-source "drivers/scsi/qla2xxx/Kconfig"
-source "drivers/scsi/qla4xxx/Kconfig"
 source "drivers/scsi/qedi/Kconfig"
 source "drivers/scsi/qedf/Kconfig"
 
