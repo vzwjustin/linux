@@ -7,17 +7,12 @@
     |         arch |status|
     -----------------------
     |       alpha: | TODO |
-    |         arc: |  ok  |
     |         arm: |  ok  |
     |       arm64: |  ok  |
     |        csky: |  ok  |
-    |     hexagon: |  ok  |
     |   loongarch: |  ok  |
     |        m68k: | TODO |
-    |  microblaze: | TODO |
     |        mips: |  ok  |
-    |       nios2: | TODO |
-    |    openrisc: |  ok  |
     |      parisc: |  ok  |
     |     powerpc: |  ok  |
     |       riscv: |  ok  |

@@ -192,10 +192,6 @@ via UML. To run tests on qemu, by default it requires two flags:
   - ``sparc64-linux-gnu`` if we have the sparc toolchain installed on
     our system.
 
-  - ``$HOME/toolchains/microblaze/gcc-9.2.0-nolibc/microblaze-linux/bin/microblaze-linux``
-    if we have downloaded the microblaze toolchain from the 0-day
-    website to a directory in our home directory called toolchains.
-
 This means that for most architectures, running under qemu is as simple as:
 
 .. code-block:: bash
@@ -292,10 +288,6 @@ command line arguments:
 
   - ``sparc64-linux-gnu-`` if we have the sparc toolchain installed on
     our system.
-
-  - ``$HOME/toolchains/microblaze/gcc-9.2.0-nolibc/microblaze-linux/bin/microblaze-linux``
-    if we have downloaded the microblaze toolchain from the 0-day
-    website to a specified path in our home directory called toolchains.
 
 - ``--qemu_config``: Specifies the path to a file containing a
   custom qemu architecture definition. This should be a python file

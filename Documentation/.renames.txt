@@ -992,9 +992,6 @@ translations/zh_CN/mips/booting translations/zh_CN/arch/mips/booting
 translations/zh_CN/mips/features translations/zh_CN/arch/mips/features
 translations/zh_CN/mips/index translations/zh_CN/arch/mips/index
 translations/zh_CN/mips/ingenic-tcu translations/zh_CN/arch/mips/ingenic-tcu
-translations/zh_CN/openrisc/index translations/zh_CN/arch/openrisc/index
-translations/zh_CN/openrisc/openrisc_port translations/zh_CN/arch/openrisc/openrisc_port
-translations/zh_CN/openrisc/todo translations/zh_CN/arch/openrisc/todo
 translations/zh_CN/parisc/debugging translations/zh_CN/arch/parisc/debugging
 translations/zh_CN/parisc/index translations/zh_CN/arch/parisc/index
 translations/zh_CN/parisc/registers translations/zh_CN/arch/parisc/registers
