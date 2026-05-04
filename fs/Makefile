@@ -86,7 +86,6 @@ obj-$(CONFIG_UBIFS_FS)		+= ubifs/
 obj-$(CONFIG_AUTOFS_FS)		+= autofs/
 obj-$(CONFIG_FUSE_FS)		+= fuse/
 obj-$(CONFIG_OVERLAY_FS)	+= overlayfs/
-obj-$(CONFIG_UDF_FS)		+= udf/
 obj-$(CONFIG_XFS_FS)		+= xfs/
 obj-$(CONFIG_9P_FS)		+= 9p/
 obj-$(CONFIG_AFS_FS)		+= afs/

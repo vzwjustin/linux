@@ -137,7 +137,6 @@ endmenu
 if BLOCK
 menu "CD-ROM/DVD Filesystems"
 
-source "fs/udf/Kconfig"
 
 endmenu
 endif # BLOCK

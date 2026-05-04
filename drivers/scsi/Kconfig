@@ -113,21 +113,6 @@ config CHR_DEV_ST
 	  To compile this driver as a module, choose M here and read
 	  <file:Documentation/scsi/scsi.rst>. The module will be called st.
 
-config BLK_DEV_SR
-	tristate "SCSI CDROM support"
-	depends on SCSI && BLK_DEV
-	select CDROM
-	help
-	  If you want to use a CD or DVD drive attached to your computer
-	  by SCSI, FireWire, USB or ATAPI, say Y and read the SCSI-HOWTO
-	  and the CDROM-HOWTO at <http://www.tldp.org/docs.html#howto>.
-
-	  Make sure to say Y or M to "ISO 9660 CD-ROM file system support".
-
-	  To compile this driver as a module, choose M here and read
-	  <file:Documentation/scsi/scsi.rst>.
-	  The module will be called sr_mod.
-
 config CHR_DEV_SG
 	tristate "SCSI generic support"
 	depends on SCSI
