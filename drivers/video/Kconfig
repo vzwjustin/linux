@@ -26,27 +26,12 @@ config VIDEO
 	bool
 	default n
 
-source "drivers/auxdisplay/Kconfig"
-
 if HAS_IOMEM
 
 config HAVE_FB_ATMEL
 	bool
 
 source "drivers/char/agp/Kconfig"
-
-source "drivers/gpu/vga/Kconfig"
-
-source "drivers/gpu/Kconfig"
-source "drivers/gpu/host1x/Kconfig"
-source "drivers/gpu/ipu-v3/Kconfig"
-source "drivers/gpu/nova-core/Kconfig"
-
-source "drivers/gpu/drm/Kconfig"
-
-menu "Frame buffer Devices"
-source "drivers/video/fbdev/Kconfig"
-endmenu
 
 source "drivers/video/backlight/Kconfig"
 
@@ -84,12 +69,5 @@ config FIRMWARE_EDID
 if VT
 	source "drivers/video/console/Kconfig"
 endif
-
-if FB_CORE || SGI_NEWPORT_CONSOLE
-	source "drivers/video/logo/Kconfig"
-
-endif
-
-source "drivers/gpu/trace/Kconfig"
 
 endmenu

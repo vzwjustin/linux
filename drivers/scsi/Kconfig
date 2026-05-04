@@ -113,21 +113,6 @@ config CHR_DEV_ST
 	  To compile this driver as a module, choose M here and read
 	  <file:Documentation/scsi/scsi.rst>. The module will be called st.
 
-config BLK_DEV_SR
-	tristate "SCSI CDROM support"
-	depends on SCSI && BLK_DEV
-	select CDROM
-	help
-	  If you want to use a CD or DVD drive attached to your computer
-	  by SCSI, FireWire, USB or ATAPI, say Y and read the SCSI-HOWTO
-	  and the CDROM-HOWTO at <http://www.tldp.org/docs.html#howto>.
-
-	  Make sure to say Y or M to "ISO 9660 CD-ROM file system support".
-
-	  To compile this driver as a module, choose M here and read
-	  <file:Documentation/scsi/scsi.rst>.
-	  The module will be called sr_mod.
-
 config CHR_DEV_SG
 	tristate "SCSI generic support"
 	depends on SCSI
@@ -722,51 +707,6 @@ config SCSI_IPS
 	  To compile this driver as a module, choose M here: the
 	  module will be called ips.
 
-config SCSI_IBMVSCSI
-	tristate "IBM Virtual SCSI support"
-	depends on PPC_PSERIES
-	select SCSI_SRP_ATTRS
-	help
-	  This is the IBM POWER Virtual SCSI Client
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called ibmvscsi.
-
-config SCSI_IBMVSCSIS
-	tristate "IBM Virtual SCSI Server support"
-	depends on PPC_PSERIES && TARGET_CORE && SCSI && PCI
-	help
-	  This is the IBM POWER Virtual SCSI Target Server
-	  This driver uses the SRP protocol for communication between servers
-	  guest and/or the host that run on the same server.
-	  More information on VSCSI protocol can be found at www.power.org
-
-	  The userspace configuration needed to initialize the driver can be
-	  be found here:
-
-	  https://github.com/powervm/ibmvscsis/wiki/Configuration
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called ibmvscsis.
-
-config SCSI_IBMVFC
-	tristate "IBM Virtual FC support"
-	depends on PPC_PSERIES && SCSI
-	depends on SCSI_FC_ATTRS
-	help
-	  This is the IBM POWER Virtual FC Client
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called ibmvfc.
-
-config SCSI_IBMVFC_TRACE
-	bool "enable driver internal trace"
-	depends on SCSI_IBMVFC
-	default y
-	help
-	  If you say Y here, the driver will trace all commands issued
-	  to the adapter. Performance impact is minimal. Trace can be
-	  dumped using /sys/class/scsi_host/hostXX/trace.
 
 config SCSI_INITIO
 	tristate "Initio 9100U(W) support"
@@ -1136,8 +1076,6 @@ config SCSI_QLOGICPTI
 	  To compile this driver as a module, choose M here: the
 	  module will be called qlogicpti.
 
-source "drivers/scsi/qla2xxx/Kconfig"
-source "drivers/scsi/qla4xxx/Kconfig"
 source "drivers/scsi/qedi/Kconfig"
 source "drivers/scsi/qedf/Kconfig"
 

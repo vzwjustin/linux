@@ -75,8 +75,3 @@ hardware and algorithm details.
 		/* Optical black level compensation */
 		struct ipu3_uapi_obgrid_param obgrid_param;
 	};
-
-Intel IPU3 ImgU uAPI data types
-===============================
-
-.. kernel-doc:: drivers/staging/media/ipu3/include/uapi/intel-ipu3.h

@@ -4,10 +4,7 @@ menu "Device Drivers"
 # Keep I/O buses first
 
 source "drivers/amba/Kconfig"
-source "drivers/eisa/Kconfig"
 source "drivers/pci/Kconfig"
-source "drivers/cxl/Kconfig"
-source "drivers/pcmcia/Kconfig"
 source "drivers/rapidio/Kconfig"
 
 config PC104
@@ -27,15 +24,12 @@ source "drivers/connector/Kconfig"
 
 source "drivers/firmware/Kconfig"
 
-source "drivers/fwctl/Kconfig"
 
-source "drivers/gnss/Kconfig"
 
 source "drivers/mtd/Kconfig"
 
 source "drivers/of/Kconfig"
 
-source "drivers/parport/Kconfig"
 
 source "drivers/pnp/Kconfig"
 
@@ -51,13 +45,8 @@ source "drivers/ata/Kconfig"
 
 source "drivers/md/Kconfig"
 
-source "drivers/target/Kconfig"
 
-source "drivers/message/fusion/Kconfig"
 
-source "drivers/firewire/Kconfig"
-
-source "drivers/macintosh/Kconfig"
 
 source "drivers/net/Kconfig"
 
@@ -75,19 +64,14 @@ source "drivers/spi/Kconfig"
 
 source "drivers/spmi/Kconfig"
 
-source "drivers/hsi/Kconfig"
 
-source "drivers/pps/Kconfig"
 
-source "drivers/ptp/Kconfig"
 
-source "drivers/dpll/Kconfig"
 
 source "drivers/pinctrl/Kconfig"
 
 source "drivers/gpio/Kconfig"
 
-source "drivers/w1/Kconfig"
 
 source "drivers/power/Kconfig"
 
@@ -97,23 +81,17 @@ source "drivers/thermal/Kconfig"
 
 source "drivers/watchdog/Kconfig"
 
-source "drivers/ssb/Kconfig"
 
-source "drivers/bcma/Kconfig"
 
 source "drivers/mfd/Kconfig"
 
 source "drivers/regulator/Kconfig"
 
-source "drivers/media/Kconfig"
 
 source "drivers/video/Kconfig"
 
-source "drivers/accel/Kconfig"
 
-source "sound/Kconfig"
 
-source "drivers/hid/Kconfig"
 
 source "drivers/usb/Kconfig"
 
@@ -121,13 +99,10 @@ source "drivers/mmc/Kconfig"
 
 source "drivers/ufs/Kconfig"
 
-source "drivers/memstick/Kconfig"
 
 source "drivers/leds/Kconfig"
 
-source "drivers/accessibility/Kconfig"
 
-source "drivers/infiniband/Kconfig"
 
 source "drivers/edac/Kconfig"
 
@@ -137,9 +112,7 @@ source "drivers/dma/Kconfig"
 
 source "drivers/dma-buf/Kconfig"
 
-source "drivers/dca/Kconfig"
 
-source "drivers/uio/Kconfig"
 
 source "drivers/vfio/Kconfig"
 
@@ -155,13 +128,8 @@ source "drivers/hv/Kconfig"
 
 source "drivers/xen/Kconfig"
 
-source "drivers/greybus/Kconfig"
 
-source "drivers/comedi/Kconfig"
 
-source "drivers/gpib/Kconfig"
-
-source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
 
@@ -179,7 +147,6 @@ source "drivers/remoteproc/Kconfig"
 
 source "drivers/rpmsg/Kconfig"
 
-source "drivers/soundwire/Kconfig"
 
 source "drivers/soc/Kconfig"
 
@@ -187,19 +154,15 @@ source "drivers/pmdomain/Kconfig"
 
 source "drivers/devfreq/Kconfig"
 
-source "drivers/extcon/Kconfig"
 
 source "drivers/memory/Kconfig"
 
-source "drivers/iio/Kconfig"
 
-source "drivers/ntb/Kconfig"
 
 source "drivers/pwm/Kconfig"
 
 source "drivers/irqchip/Kconfig"
 
-source "drivers/ipack/Kconfig"
 
 source "drivers/reset/Kconfig"
 
@@ -207,13 +170,11 @@ source "drivers/phy/Kconfig"
 
 source "drivers/powercap/Kconfig"
 
-source "drivers/mcb/Kconfig"
 
 source "drivers/perf/Kconfig"
 
 source "drivers/ras/Kconfig"
 
-source "drivers/thunderbolt/Kconfig"
 
 source "drivers/android/Kconfig"
 
@@ -223,11 +184,8 @@ source "drivers/dax/Kconfig"
 
 source "drivers/nvmem/Kconfig"
 
-source "drivers/hwtracing/Kconfig"
 
-source "drivers/fpga/Kconfig"
 
-source "drivers/fsi/Kconfig"
 
 source "drivers/tee/Kconfig"
 
@@ -235,21 +193,15 @@ source "drivers/mux/Kconfig"
 
 source "drivers/opp/Kconfig"
 
-source "drivers/siox/Kconfig"
 
-source "drivers/slimbus/Kconfig"
 
 source "drivers/interconnect/Kconfig"
 
-source "drivers/counter/Kconfig"
 
-source "drivers/most/Kconfig"
 
 source "drivers/peci/Kconfig"
 
-source "drivers/hte/Kconfig"
 
-source "drivers/cdx/Kconfig"
 
 source "drivers/resctrl/Kconfig"
 

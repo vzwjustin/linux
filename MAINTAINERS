@@ -919,14 +919,6 @@ L:	linux-media@vger.kernel.org
 S:	Maintained
 F:	drivers/staging/media/sunxi/cedrus/
 
-ALPHA PORT
-M:	Richard Henderson <richard.henderson@linaro.org>
-M:	Matt Turner <mattst88@gmail.com>
-M:	Magnus Lindholm <linmag7@gmail.com>
-L:	linux-alpha@vger.kernel.org
-S:	Odd Fixes
-F:	arch/alpha/
-
 ALPS PS/2 TOUCHPAD DRIVER
 R:	Pali Rohár <pali@kernel.org>
 F:	drivers/input/mouse/alps.*
@@ -5586,18 +5578,6 @@ S:	Maintained
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git
 F:	sound/pci/oxygen/
 
-C-SKY ARCHITECTURE
-M:	Guo Ren <guoren@kernel.org>
-L:	linux-csky@vger.kernel.org
-S:	Supported
-T:	git https://github.com/c-sky/csky-linux.git
-F:	Documentation/devicetree/bindings/csky/
-F:	Documentation/devicetree/bindings/interrupt-controller/csky,*
-F:	Documentation/devicetree/bindings/timer/csky,*
-F:	arch/csky/
-F:	drivers/clocksource/timer-gx6605s.c
-F:	drivers/clocksource/timer-mp-csky.c
-F:	drivers/irqchip/irq-csky-*
 N:	csky
 K:	csky
 
@@ -14734,72 +14714,6 @@ F:	drivers/macintosh/
 X:	drivers/macintosh/adb-iop.c
 X:	drivers/macintosh/via-macii.c
 
-LINUX FOR POWERPC (32-BIT AND 64-BIT)
-M:	Madhavan Srinivasan <maddy@linux.ibm.com>
-M:	Michael Ellerman <mpe@ellerman.id.au>
-R:	Nicholas Piggin <npiggin@gmail.com>
-R:	Christophe Leroy (CS GROUP) <chleroy@kernel.org>
-L:	linuxppc-dev@lists.ozlabs.org
-S:	Supported
-W:	https://github.com/linuxppc/wiki/wiki
-Q:	http://patchwork.ozlabs.org/project/linuxppc-dev/list/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/powerpc/linux.git
-F:	Documentation/ABI/stable/sysfs-firmware-opal-*
-F:	Documentation/devicetree/bindings/i2c/i2c-opal.txt
-F:	Documentation/devicetree/bindings/powerpc/
-F:	Documentation/devicetree/bindings/rtc/rtc-opal.txt
-F:	Documentation/arch/powerpc/
-F:	arch/powerpc/
-F:	drivers/*/*/*pasemi*
-F:	drivers/*/*pasemi*
-F:	drivers/char/tpm/tpm_ibmvtpm*
-F:	drivers/crypto/nx/
-F:	drivers/i2c/busses/i2c-opal.c
-F:	drivers/net/ethernet/ibm/ibmveth.*
-F:	drivers/net/ethernet/ibm/ibmvnic.*
-F:	drivers/pci/hotplug/pnv_php.c
-F:	drivers/pci/hotplug/rpa*
-F:	drivers/rtc/rtc-opal.c
-F:	drivers/scsi/ibmvscsi/
-F:	drivers/tty/hvc/hvc_opal.c
-F:	drivers/watchdog/wdrtas.c
-F:	include/linux/papr_scm.h
-F:	include/uapi/linux/papr_pdsm.h
-F:	tools/testing/selftests/powerpc
-N:	/pmac
-N:	powermac
-N:	powernv
-N:	[^a-z0-9]ps3
-N:	pseries
-
-LINUX FOR POWERPC EMBEDDED MPC5XXX
-M:	Anatolij Gustschin <agust@denx.de>
-L:	linuxppc-dev@lists.ozlabs.org
-S:	Odd Fixes
-F:	arch/powerpc/platforms/512x/
-F:	arch/powerpc/platforms/52xx/
-
-LINUX FOR POWERPC EMBEDDED PPC4XX
-L:	linuxppc-dev@lists.ozlabs.org
-S:	Orphan
-F:	arch/powerpc/platforms/44x/
-
-LINUX FOR POWERPC EMBEDDED PPC85XX
-M:	Scott Wood <oss@buserror.net>
-L:	linuxppc-dev@lists.ozlabs.org
-S:	Odd fixes
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/scottwood/linux.git
-F:	Documentation/devicetree/bindings/cache/freescale-l2cache.txt
-F:	Documentation/devicetree/bindings/powerpc/fsl/
-F:	arch/powerpc/platforms/85xx/
-
-LINUX FOR POWERPC EMBEDDED PPC8XX AND PPC83XX
-M:	Christophe Leroy (CS GROUP) <chleroy@kernel.org>
-L:	linuxppc-dev@lists.ozlabs.org
-S:	Maintained
-F:	arch/powerpc/platforms/8xx/
-F:	arch/powerpc/platforms/83xx/
-
 LINUX KERNEL DUMP TEST MODULE (LKDTM)
 M:	Kees Cook <kees@kernel.org>
 S:	Maintained
@@ -15279,37 +15193,6 @@ L:	netdev@vger.kernel.org
 S:	Supported
 F:	drivers/net/pcs/pcs-lynx.c
 F:	include/linux/pcs-lynx.h
-
-M68K ARCHITECTURE
-M:	Geert Uytterhoeven <geert@linux-m68k.org>
-L:	linux-m68k@lists.linux-m68k.org
-S:	Maintained
-W:	http://www.linux-m68k.org/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/geert/linux-m68k.git
-F:	arch/m68k/
-F:	drivers/zorro/
-
-M68K ON APPLE MACINTOSH
-M:	Joshua Thompson <funaho@jurai.org>
-L:	linux-m68k@lists.linux-m68k.org
-S:	Maintained
-W:	http://www.mac.linux-m68k.org/
-F:	arch/m68k/mac/
-F:	drivers/macintosh/adb-iop.c
-F:	drivers/macintosh/via-macii.c
-
-M68K ON HP9000/300
-M:	Philip Blundell <philb@gnu.org>
-S:	Maintained
-W:	http://www.tazenda.demon.co.uk/phil/linux-hp
-F:	arch/m68k/hp300/
-
-M68K ON MVME147
-M:	Daniel Palmer <daniel@thingy.jp>
-S:	Maintained
-F:	arch/m68k/mvme147/
-F:	drivers/net/ethernet/amd/mvme147.c
-F:	drivers/scsi/mvme147.*
 
 M88DS3103 MEDIA DRIVER
 L:	linux-media@vger.kernel.org
@@ -17260,26 +17143,6 @@ F:	drivers/bus/mhi/
 F:	drivers/pci/endpoint/functions/pci-epf-mhi.c
 F:	include/linux/mhi.h
 
-MICROBLAZE ARCHITECTURE
-M:	Michal Simek <monstr@monstr.eu>
-S:	Supported
-W:	http://www.monstr.eu/fdt/
-T:	git git://git.monstr.eu/linux-2.6-microblaze.git
-F:	arch/microblaze/
-
-MICROBLAZE TMR INJECT
-M:	Appana Durga Kedareswara rao <appana.durga.kedareswara.rao@amd.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/misc/xlnx,tmr-inject.yaml
-F:	drivers/misc/xilinx_tmr_inject.c
-
-MICROBLAZE TMR MANAGER
-M:	Appana Durga Kedareswara rao <appana.durga.kedareswara.rao@amd.com>
-S:	Supported
-F:	Documentation/ABI/testing/sysfs-driver-xilinx-tmr-manager
-F:	Documentation/devicetree/bindings/misc/xlnx,tmr-manager.yaml
-F:	drivers/misc/xilinx_tmr_manager.c
-
 MICROCHIP AT91 DMA DRIVERS
 M:	Ludovic Desroches <ludovic.desroches@microchip.com>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
@@ -18929,12 +18792,6 @@ L:	linux-input@vger.kernel.org
 S:	Maintained
 F:	drivers/hid/hid-nintendo*
 
-NIOS2 ARCHITECTURE
-M:	Dinh Nguyen <dinguyen@kernel.org>
-S:	Maintained
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux.git
-F:	arch/nios2/
-
 NITRO ENCLAVES (NE)
 M:	Alexandru Ciobotaru <alcioa@amazon.com>
 R:	The AWS Nitro Enclaves Team <aws-nitro-enclaves-devel@amazon.com>
@@ -20017,20 +19874,6 @@ F:	Documentation/i2c/busses/i2c-ocores.rst
 F:	drivers/i2c/busses/i2c-ocores.c
 F:	include/linux/platform_data/i2c-ocores.h
 
-OPENRISC ARCHITECTURE
-M:	Jonas Bonn <jonas@southpole.se>
-M:	Stefan Kristiansson <stefan.kristiansson@saunalahti.fi>
-M:	Stafford Horne <shorne@gmail.com>
-L:	linux-openrisc@vger.kernel.org
-S:	Maintained
-W:	http://openrisc.io
-T:	git https://github.com/openrisc/linux.git
-F:	Documentation/arch/openrisc/
-F:	Documentation/devicetree/bindings/openrisc/
-F:	arch/openrisc/
-F:	drivers/irqchip/irq-ompic.c
-F:	drivers/irqchip/irq-or1k-*
-
 OPENVPN DATA CHANNEL OFFLOAD
 M:	Antonio Quartulli <antonio@openvpn.net>
 R:	Sabrina Dubroca <sd@queasysnail.net>
@@ -20233,25 +20076,6 @@ F:	arch/*/include/asm/paravirt*.h
 F:	arch/*/kernel/paravirt*
 F:	include/linux/hypervisor.h
 
-PARISC ARCHITECTURE
-M:	"James E.J. Bottomley" <James.Bottomley@HansenPartnership.com>
-M:	Helge Deller <deller@gmx.de>
-L:	linux-parisc@vger.kernel.org
-S:	Maintained
-W:	https://parisc.wiki.kernel.org
-Q:	http://patchwork.kernel.org/project/linux-parisc/list/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/jejb/parisc-2.6.git
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/deller/parisc-linux.git
-F:	Documentation/arch/parisc/
-F:	arch/parisc/
-F:	drivers/char/agp/parisc-agp.c
-F:	drivers/input/misc/hp_sdc_rtc.c
-F:	drivers/input/serio/gscps2.c
-F:	drivers/input/serio/hp_sdc*
-F:	drivers/parisc/
-F:	drivers/parport/parport_gsc.*
-F:	drivers/tty/serial/8250/8250_parisc.c
-F:	drivers/video/console/sti*
 F:	drivers/video/fbdev/sti*
 F:	drivers/video/logo/logo_parisc*
 F:	include/linux/hp_sdc.h
@@ -21929,13 +21753,6 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/misc/qcom,fastrpc.yaml
 F:	drivers/misc/fastrpc.c
 F:	include/uapi/misc/fastrpc.h
-
-QUALCOMM HEXAGON ARCHITECTURE
-M:	Brian Cain <brian.cain@oss.qualcomm.com>
-L:	linux-hexagon@vger.kernel.org
-S:	Supported
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/bcain/linux.git
-F:	arch/hexagon/
 
 QUALCOMM HIDMA DRIVER
 M:	Sinan Kaya <okaya@kernel.org>
@@ -25109,33 +24926,6 @@ R:	Avadhut Naik <avadhut.naik@amd.com>
 S:	Maintained
 F:	Documentation/translations/sp_SP/
 
-SPARC + UltraSPARC (sparc/sparc64)
-M:	"David S. Miller" <davem@davemloft.net>
-M:	Andreas Larsson <andreas@gaisler.com>
-L:	sparclinux@vger.kernel.org
-S:	Maintained
-Q:	http://patchwork.ozlabs.org/project/sparclinux/list/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc.git
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc-next.git
-F:	arch/sparc/
-F:	drivers/sbus/
-
-SPARC SERIAL DRIVERS
-M:	"David S. Miller" <davem@davemloft.net>
-L:	sparclinux@vger.kernel.org
-S:	Maintained
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc.git
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc-next.git
-F:	drivers/tty/serial/suncore.c
-F:	drivers/tty/serial/sunhv.c
-F:	drivers/tty/serial/sunsab.c
-F:	drivers/tty/serial/sunsab.h
-F:	drivers/tty/serial/sunsu.c
-F:	drivers/tty/serial/sunzilog.c
-F:	drivers/tty/serial/sunzilog.h
-F:	drivers/tty/vcc.c
-F:	include/linux/sunserialcore.h
-
 SPARSE CHECKER
 M:	Chris Li <sparse@chrisli.org>
 L:	linux-sparse@vger.kernel.org
@@ -25369,48 +25159,6 @@ M:	Sasha Levin <sashal@kernel.org>
 L:	stable@vger.kernel.org
 S:	Supported
 F:	Documentation/process/stable-kernel-rules.rst
-
-STAGING - ATOMISP DRIVER
-M:	Hans de Goede <hansg@kernel.org>
-M:	Mauro Carvalho Chehab <mchehab@kernel.org>
-R:	Sakari Ailus <sakari.ailus@linux.intel.com>
-L:	linux-media@vger.kernel.org
-S:	Maintained
-F:	drivers/staging/media/atomisp/
-
-STAGING - INDUSTRIAL IO
-M:	Jonathan Cameron <jic23@kernel.org>
-L:	linux-iio@vger.kernel.org
-S:	Odd Fixes
-F:	drivers/staging/iio/
-
-STAGING - NVIDIA COMPLIANT EMBEDDED CONTROLLER INTERFACE (nvec)
-M:	Marc Dietrich <marvin24@gmx.de>
-L:	ac100@lists.launchpad.net (moderated for non-subscribers)
-L:	linux-tegra@vger.kernel.org
-S:	Maintained
-F:	drivers/staging/nvec/
-
-STAGING - SEPS525 LCD CONTROLLER DRIVERS
-M:	Michael Hennerich <michael.hennerich@analog.com>
-L:	linux-fbdev@vger.kernel.org
-S:	Supported
-F:	drivers/staging/fbtft/fb_seps525.c
-
-STAGING - SILICON MOTION SM750 FRAME BUFFER DRIVER
-M:	Sudip Mukherjee <sudipm.mukherjee@gmail.com>
-M:	Teddy Wang <teddy.wang@siliconmotion.com>
-M:	Sudip Mukherjee <sudip.mukherjee@codethink.co.uk>
-L:	linux-fbdev@vger.kernel.org
-S:	Maintained
-F:	drivers/staging/sm750fb/
-
-STAGING SUBSYSTEM
-M:	Greg Kroah-Hartman <gregkh@linuxfoundation.org>
-L:	linux-staging@lists.linux.dev
-S:	Supported
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/gregkh/staging.git
-F:	drivers/staging/
 
 STANDALONE CACHE CONTROLLER DRIVERS
 M:	Conor Dooley <conor@kernel.org>
@@ -25743,17 +25491,6 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/watchdog/sunplus,sp7021-wdt.yaml
 F:	drivers/watchdog/sunplus_wdt.c
 
-SUPERH
-M:	Yoshinori Sato <ysato@users.sourceforge.jp>
-M:	Rich Felker <dalias@libc.org>
-M:	John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
-L:	linux-sh@vger.kernel.org
-S:	Maintained
-Q:	http://patchwork.kernel.org/project/linux-sh/list/
-F:	Documentation/arch/sh/
-F:	arch/sh/
-F:	drivers/sh/
-
 SUSPEND TO RAM
 M:	"Rafael J. Wysocki" <rafael@kernel.org>
 R:	Len Brown <lenb@kernel.org>
@@ -25810,48 +25547,6 @@ F:	drivers/dma-buf/sw_sync.c
 F:	drivers/dma-buf/sync_*
 F:	include/linux/sync_file.h
 F:	include/uapi/linux/sync_file.h
-
-SYNOPSYS ARC ARCHITECTURE
-M:	Vineet Gupta <vgupta@kernel.org>
-L:	linux-snps-arc@lists.infradead.org
-S:	Supported
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/vgupta/arc.git
-F:	Documentation/arch/arc
-F:	Documentation/devicetree/bindings/arc/*
-F:	Documentation/devicetree/bindings/interrupt-controller/snps,arc*
-F:	arch/arc/
-F:	drivers/clocksource/arc_timer.c
-F:	drivers/tty/serial/arc_uart.c
-
-SYNOPSYS ARC HSDK SDP pll clock driver
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/clock/snps,hsdk-pll-clock.txt
-F:	drivers/clk/clk-hsdk-pll.c
-
-SYNOPSYS ARC SDP clock driver
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/clock/snps,pll-clock.txt
-F:	drivers/clk/axs10x/*
-
-SYNOPSYS ARC SDP platform support
-M:	Alexey Brodkin <abrodkin@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/arc/axs10*
-F:	arch/arc/boot/dts/ax*
-F:	arch/arc/plat-axs10x
-
-SYNOPSYS AXS10x RESET CONTROLLER DRIVER
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/reset/snps,axs10x-reset.yaml
-F:	drivers/reset/reset-axs10x.c
-
-SYNOPSYS CREG GPIO DRIVER
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Maintained
-F:	drivers/gpio/gpio-creg-snps.c
 
 SYNOPSYS DESIGNWARE 8250 UART DRIVER
 M:	Ilpo Järvinen <ilpo.jarvinen@linux.intel.com>
@@ -29320,12 +29015,6 @@ L:	linux-i2c@vger.kernel.org
 S:	Supported
 W:	http://www.marvell.com
 F:	drivers/i2c/busses/i2c-xlp9xx.c
-
-XTENSA XTFPGA PLATFORM SUPPORT
-M:	Max Filippov <jcmvbkbc@gmail.com>
-S:	Maintained
-F:	drivers/spi/spi-xtensa-xtfpga.c
-F:	sound/soc/xtensa/xtfpga-i2s.c
 
 XZ EMBEDDED
 M:	Lasse Collin <lasse.collin@tukaani.org>
