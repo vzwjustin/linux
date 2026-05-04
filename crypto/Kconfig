@@ -1376,9 +1376,6 @@ endif
 if S390
 source "arch/s390/crypto/Kconfig"
 endif
-if SPARC
-source "arch/sparc/crypto/Kconfig"
-endif
 if X86
 source "arch/x86/crypto/Kconfig"
 endif

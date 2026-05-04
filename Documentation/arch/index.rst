@@ -12,13 +12,8 @@ implementation.
    arm/index
    arm64/index
    loongarch/index
-   m68k/index
    mips/index
-   parisc/index
    powerpc/index
    riscv/index
    s390/index
-   sh/index
-   sparc/index
    x86/index
-   xtensa/index

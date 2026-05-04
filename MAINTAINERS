@@ -919,14 +919,6 @@ L:	linux-media@vger.kernel.org
 S:	Maintained
 F:	drivers/staging/media/sunxi/cedrus/
 
-ALPHA PORT
-M:	Richard Henderson <richard.henderson@linaro.org>
-M:	Matt Turner <mattst88@gmail.com>
-M:	Magnus Lindholm <linmag7@gmail.com>
-L:	linux-alpha@vger.kernel.org
-S:	Odd Fixes
-F:	arch/alpha/
-
 ALPS PS/2 TOUCHPAD DRIVER
 R:	Pali Rohár <pali@kernel.org>
 F:	drivers/input/mouse/alps.*
@@ -5586,18 +5578,6 @@ S:	Maintained
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git
 F:	sound/pci/oxygen/
 
-C-SKY ARCHITECTURE
-M:	Guo Ren <guoren@kernel.org>
-L:	linux-csky@vger.kernel.org
-S:	Supported
-T:	git https://github.com/c-sky/csky-linux.git
-F:	Documentation/devicetree/bindings/csky/
-F:	Documentation/devicetree/bindings/interrupt-controller/csky,*
-F:	Documentation/devicetree/bindings/timer/csky,*
-F:	arch/csky/
-F:	drivers/clocksource/timer-gx6605s.c
-F:	drivers/clocksource/timer-mp-csky.c
-F:	drivers/irqchip/irq-csky-*
 N:	csky
 K:	csky
 
@@ -15280,37 +15260,6 @@ S:	Supported
 F:	drivers/net/pcs/pcs-lynx.c
 F:	include/linux/pcs-lynx.h
 
-M68K ARCHITECTURE
-M:	Geert Uytterhoeven <geert@linux-m68k.org>
-L:	linux-m68k@lists.linux-m68k.org
-S:	Maintained
-W:	http://www.linux-m68k.org/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/geert/linux-m68k.git
-F:	arch/m68k/
-F:	drivers/zorro/
-
-M68K ON APPLE MACINTOSH
-M:	Joshua Thompson <funaho@jurai.org>
-L:	linux-m68k@lists.linux-m68k.org
-S:	Maintained
-W:	http://www.mac.linux-m68k.org/
-F:	arch/m68k/mac/
-F:	drivers/macintosh/adb-iop.c
-F:	drivers/macintosh/via-macii.c
-
-M68K ON HP9000/300
-M:	Philip Blundell <philb@gnu.org>
-S:	Maintained
-W:	http://www.tazenda.demon.co.uk/phil/linux-hp
-F:	arch/m68k/hp300/
-
-M68K ON MVME147
-M:	Daniel Palmer <daniel@thingy.jp>
-S:	Maintained
-F:	arch/m68k/mvme147/
-F:	drivers/net/ethernet/amd/mvme147.c
-F:	drivers/scsi/mvme147.*
-
 M88DS3103 MEDIA DRIVER
 L:	linux-media@vger.kernel.org
 S:	Orphan
@@ -20193,25 +20142,6 @@ F:	arch/*/include/asm/paravirt*.h
 F:	arch/*/kernel/paravirt*
 F:	include/linux/hypervisor.h
 
-PARISC ARCHITECTURE
-M:	"James E.J. Bottomley" <James.Bottomley@HansenPartnership.com>
-M:	Helge Deller <deller@gmx.de>
-L:	linux-parisc@vger.kernel.org
-S:	Maintained
-W:	https://parisc.wiki.kernel.org
-Q:	http://patchwork.kernel.org/project/linux-parisc/list/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/jejb/parisc-2.6.git
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/deller/parisc-linux.git
-F:	Documentation/arch/parisc/
-F:	arch/parisc/
-F:	drivers/char/agp/parisc-agp.c
-F:	drivers/input/misc/hp_sdc_rtc.c
-F:	drivers/input/serio/gscps2.c
-F:	drivers/input/serio/hp_sdc*
-F:	drivers/parisc/
-F:	drivers/parport/parport_gsc.*
-F:	drivers/tty/serial/8250/8250_parisc.c
-F:	drivers/video/console/sti*
 F:	drivers/video/fbdev/sti*
 F:	drivers/video/logo/logo_parisc*
 F:	include/linux/hp_sdc.h
@@ -25062,33 +24992,6 @@ R:	Avadhut Naik <avadhut.naik@amd.com>
 S:	Maintained
 F:	Documentation/translations/sp_SP/
 
-SPARC + UltraSPARC (sparc/sparc64)
-M:	"David S. Miller" <davem@davemloft.net>
-M:	Andreas Larsson <andreas@gaisler.com>
-L:	sparclinux@vger.kernel.org
-S:	Maintained
-Q:	http://patchwork.ozlabs.org/project/sparclinux/list/
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc.git
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc-next.git
-F:	arch/sparc/
-F:	drivers/sbus/
-
-SPARC SERIAL DRIVERS
-M:	"David S. Miller" <davem@davemloft.net>
-L:	sparclinux@vger.kernel.org
-S:	Maintained
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc.git
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/davem/sparc-next.git
-F:	drivers/tty/serial/suncore.c
-F:	drivers/tty/serial/sunhv.c
-F:	drivers/tty/serial/sunsab.c
-F:	drivers/tty/serial/sunsab.h
-F:	drivers/tty/serial/sunsu.c
-F:	drivers/tty/serial/sunzilog.c
-F:	drivers/tty/serial/sunzilog.h
-F:	drivers/tty/vcc.c
-F:	include/linux/sunserialcore.h
-
 SPARSE CHECKER
 M:	Chris Li <sparse@chrisli.org>
 L:	linux-sparse@vger.kernel.org
@@ -25653,17 +25556,6 @@ L:	linux-watchdog@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/watchdog/sunplus,sp7021-wdt.yaml
 F:	drivers/watchdog/sunplus_wdt.c
-
-SUPERH
-M:	Yoshinori Sato <ysato@users.sourceforge.jp>
-M:	Rich Felker <dalias@libc.org>
-M:	John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
-L:	linux-sh@vger.kernel.org
-S:	Maintained
-Q:	http://patchwork.kernel.org/project/linux-sh/list/
-F:	Documentation/arch/sh/
-F:	arch/sh/
-F:	drivers/sh/
 
 SUSPEND TO RAM
 M:	"Rafael J. Wysocki" <rafael@kernel.org>
@@ -29189,12 +29081,6 @@ L:	linux-i2c@vger.kernel.org
 S:	Supported
 W:	http://www.marvell.com
 F:	drivers/i2c/busses/i2c-xlp9xx.c
-
-XTENSA XTFPGA PLATFORM SUPPORT
-M:	Max Filippov <jcmvbkbc@gmail.com>
-S:	Maintained
-F:	drivers/spi/spi-xtensa-xtfpga.c
-F:	sound/soc/xtensa/xtfpga-i2s.c
 
 XZ EMBEDDED
 M:	Lasse Collin <lasse.collin@tukaani.org>
