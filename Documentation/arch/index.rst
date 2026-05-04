@@ -13,7 +13,6 @@ implementation.
    arm64/index
    loongarch/index
    mips/index
-   powerpc/index
    riscv/index
    s390/index
    x86/index

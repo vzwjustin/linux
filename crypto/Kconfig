@@ -1367,9 +1367,6 @@ endif
 if MIPS
 source "arch/mips/crypto/Kconfig"
 endif
-if PPC
-source "arch/powerpc/crypto/Kconfig"
-endif
 if RISCV
 source "arch/riscv/crypto/Kconfig"
 endif
