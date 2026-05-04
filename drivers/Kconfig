@@ -4,7 +4,6 @@ menu "Device Drivers"
 # Keep I/O buses first
 
 source "drivers/amba/Kconfig"
-source "drivers/eisa/Kconfig"
 source "drivers/pci/Kconfig"
 source "drivers/cxl/Kconfig"
 source "drivers/rapidio/Kconfig"
@@ -103,7 +102,6 @@ source "drivers/regulator/Kconfig"
 
 source "drivers/video/Kconfig"
 
-source "drivers/accel/Kconfig"
 
 
 source "drivers/hid/Kconfig"
@@ -120,7 +118,6 @@ source "drivers/leds/Kconfig"
 
 source "drivers/accessibility/Kconfig"
 
-source "drivers/infiniband/Kconfig"
 
 source "drivers/edac/Kconfig"
 
@@ -130,7 +127,6 @@ source "drivers/dma/Kconfig"
 
 source "drivers/dma-buf/Kconfig"
 
-source "drivers/dca/Kconfig"
 
 source "drivers/uio/Kconfig"
 

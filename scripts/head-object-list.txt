@@ -11,7 +11,3 @@
 # If you can achieve the correct code ordering by linker script, please delete
 # the entry from this file.
 #
-arch/arm/kernel/head-nommu.o
-arch/arm/kernel/head.o
-arch/loongarch/kernel/head.o
-arch/s390/kernel/head64.o
