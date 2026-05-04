@@ -13,7 +13,6 @@
 #include <linux/efi.h>
 #include <linux/hugetlb.h>
 #include <linux/ima.h>
-#include <linux/init_ohci1394_dma.h>
 #include <linux/initrd.h>
 #include <linux/iscsi_ibft.h>
 #include <linux/memblock.h>
@@ -1149,10 +1148,6 @@ void __init setup_arch(char **cmdline_p)
 	 * NOTE: On x86-32, only from this point on, fixmaps are ready for use.
 	 */
 
-#ifdef CONFIG_PROVIDE_OHCI1394_DMA_INIT
-	if (init_ohci1394_dma_early)
-		init_ohci1394_dma_on_all_controllers();
-#endif
 	/* Allocate bigger log buffer */
 	setup_log_buf(1);
 
