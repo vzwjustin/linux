@@ -26,8 +26,6 @@ config VIDEO
 	bool
 	default n
 
-source "drivers/auxdisplay/Kconfig"
-
 if HAS_IOMEM
 
 config HAVE_FB_ATMEL

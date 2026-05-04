@@ -37,7 +37,6 @@ config DRM_TEGRA_DEBUG
 
 config DRM_TEGRA_STAGING
 	bool "Enable HOST1X interface"
-	depends on STAGING
 	help
 	  Say yes if HOST1X should be available for userspace DRM users.
 
