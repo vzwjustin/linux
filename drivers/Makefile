@@ -63,8 +63,6 @@ obj-y				+= char/
 # iommu/ comes before gpu as gpu are using iommu controllers
 obj-y				+= iommu/
 
-# gpu/ comes after char for AGP vs DRM startup and after iommu
-obj-y				+= gpu/
 
 obj-$(CONFIG_CONNECTOR)		+= connector/
 
