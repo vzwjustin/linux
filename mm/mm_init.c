@@ -1761,15 +1761,6 @@ void __init setup_nr_node_ids(void)
 }
 #endif
 
-/*
- * Some architectures, e.g. ARC may have ZONE_HIGHMEM below ZONE_NORMAL. For
- * such cases we allow max_zone_pfn sorted in the descending order
- */
-static bool arch_has_descending_max_zone_pfns(void)
-{
-	return IS_ENABLED(CONFIG_ARC) && !IS_ENABLED(CONFIG_ARC_HAS_PAE40);
-}
-
 static void __init set_high_memory(void)
 {
 	phys_addr_t highmem = memblock_end_of_DRAM();
@@ -1783,8 +1774,7 @@ static void __init set_high_memory(void)
 		return;
 
 #ifdef CONFIG_HIGHMEM
-	if (arch_has_descending_max_zone_pfns() ||
-	    highmem > PFN_PHYS(arch_zone_lowest_possible_pfn[ZONE_HIGHMEM]))
+	if (highmem > PFN_PHYS(arch_zone_lowest_possible_pfn[ZONE_HIGHMEM]))
 		highmem = PFN_PHYS(arch_zone_lowest_possible_pfn[ZONE_HIGHMEM]);
 #endif
 
@@ -1807,27 +1797,20 @@ static void __init free_area_init(void)
 {
 	unsigned long max_zone_pfn[MAX_NR_ZONES] = { 0 };
 	unsigned long start_pfn, end_pfn;
-	int i, nid, zone;
-	bool descending;
+	int i, nid;
 
 	arch_zone_limits_init(max_zone_pfn);
 	sparse_init();
 
 	start_pfn = PHYS_PFN(memblock_start_of_DRAM());
-	descending = arch_has_descending_max_zone_pfns();
 
 	for (i = 0; i < MAX_NR_ZONES; i++) {
-		if (descending)
-			zone = MAX_NR_ZONES - i - 1;
-		else
-			zone = i;
-
-		if (zone == ZONE_MOVABLE)
+		if (i == ZONE_MOVABLE)
 			continue;
 
-		end_pfn = max(max_zone_pfn[zone], start_pfn);
-		arch_zone_lowest_possible_pfn[zone] = start_pfn;
-		arch_zone_highest_possible_pfn[zone] = end_pfn;
+		end_pfn = max(max_zone_pfn[i], start_pfn);
+		arch_zone_lowest_possible_pfn[i] = start_pfn;
+		arch_zone_highest_possible_pfn[i] = end_pfn;
 
 		start_pfn = end_pfn;
 	}

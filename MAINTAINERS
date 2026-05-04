@@ -17260,26 +17260,6 @@ F:	drivers/bus/mhi/
 F:	drivers/pci/endpoint/functions/pci-epf-mhi.c
 F:	include/linux/mhi.h
 
-MICROBLAZE ARCHITECTURE
-M:	Michal Simek <monstr@monstr.eu>
-S:	Supported
-W:	http://www.monstr.eu/fdt/
-T:	git git://git.monstr.eu/linux-2.6-microblaze.git
-F:	arch/microblaze/
-
-MICROBLAZE TMR INJECT
-M:	Appana Durga Kedareswara rao <appana.durga.kedareswara.rao@amd.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/misc/xlnx,tmr-inject.yaml
-F:	drivers/misc/xilinx_tmr_inject.c
-
-MICROBLAZE TMR MANAGER
-M:	Appana Durga Kedareswara rao <appana.durga.kedareswara.rao@amd.com>
-S:	Supported
-F:	Documentation/ABI/testing/sysfs-driver-xilinx-tmr-manager
-F:	Documentation/devicetree/bindings/misc/xlnx,tmr-manager.yaml
-F:	drivers/misc/xilinx_tmr_manager.c
-
 MICROCHIP AT91 DMA DRIVERS
 M:	Ludovic Desroches <ludovic.desroches@microchip.com>
 L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
@@ -18929,12 +18909,6 @@ L:	linux-input@vger.kernel.org
 S:	Maintained
 F:	drivers/hid/hid-nintendo*
 
-NIOS2 ARCHITECTURE
-M:	Dinh Nguyen <dinguyen@kernel.org>
-S:	Maintained
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/dinguyen/linux.git
-F:	arch/nios2/
-
 NITRO ENCLAVES (NE)
 M:	Alexandru Ciobotaru <alcioa@amazon.com>
 R:	The AWS Nitro Enclaves Team <aws-nitro-enclaves-devel@amazon.com>
@@ -20016,20 +19990,6 @@ F:	Documentation/devicetree/bindings/i2c/opencores,i2c-ocores.yaml
 F:	Documentation/i2c/busses/i2c-ocores.rst
 F:	drivers/i2c/busses/i2c-ocores.c
 F:	include/linux/platform_data/i2c-ocores.h
-
-OPENRISC ARCHITECTURE
-M:	Jonas Bonn <jonas@southpole.se>
-M:	Stefan Kristiansson <stefan.kristiansson@saunalahti.fi>
-M:	Stafford Horne <shorne@gmail.com>
-L:	linux-openrisc@vger.kernel.org
-S:	Maintained
-W:	http://openrisc.io
-T:	git https://github.com/openrisc/linux.git
-F:	Documentation/arch/openrisc/
-F:	Documentation/devicetree/bindings/openrisc/
-F:	arch/openrisc/
-F:	drivers/irqchip/irq-ompic.c
-F:	drivers/irqchip/irq-or1k-*
 
 OPENVPN DATA CHANNEL OFFLOAD
 M:	Antonio Quartulli <antonio@openvpn.net>
@@ -21929,13 +21889,6 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/misc/qcom,fastrpc.yaml
 F:	drivers/misc/fastrpc.c
 F:	include/uapi/misc/fastrpc.h
-
-QUALCOMM HEXAGON ARCHITECTURE
-M:	Brian Cain <brian.cain@oss.qualcomm.com>
-L:	linux-hexagon@vger.kernel.org
-S:	Supported
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/bcain/linux.git
-F:	arch/hexagon/
 
 QUALCOMM HIDMA DRIVER
 M:	Sinan Kaya <okaya@kernel.org>
@@ -25768,48 +25721,6 @@ F:	drivers/dma-buf/sw_sync.c
 F:	drivers/dma-buf/sync_*
 F:	include/linux/sync_file.h
 F:	include/uapi/linux/sync_file.h
-
-SYNOPSYS ARC ARCHITECTURE
-M:	Vineet Gupta <vgupta@kernel.org>
-L:	linux-snps-arc@lists.infradead.org
-S:	Supported
-T:	git git://git.kernel.org/pub/scm/linux/kernel/git/vgupta/arc.git
-F:	Documentation/arch/arc
-F:	Documentation/devicetree/bindings/arc/*
-F:	Documentation/devicetree/bindings/interrupt-controller/snps,arc*
-F:	arch/arc/
-F:	drivers/clocksource/arc_timer.c
-F:	drivers/tty/serial/arc_uart.c
-
-SYNOPSYS ARC HSDK SDP pll clock driver
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/clock/snps,hsdk-pll-clock.txt
-F:	drivers/clk/clk-hsdk-pll.c
-
-SYNOPSYS ARC SDP clock driver
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/clock/snps,pll-clock.txt
-F:	drivers/clk/axs10x/*
-
-SYNOPSYS ARC SDP platform support
-M:	Alexey Brodkin <abrodkin@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/arc/axs10*
-F:	arch/arc/boot/dts/ax*
-F:	arch/arc/plat-axs10x
-
-SYNOPSYS AXS10x RESET CONTROLLER DRIVER
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Supported
-F:	Documentation/devicetree/bindings/reset/snps,axs10x-reset.yaml
-F:	drivers/reset/reset-axs10x.c
-
-SYNOPSYS CREG GPIO DRIVER
-M:	Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
-S:	Maintained
-F:	drivers/gpio/gpio-creg-snps.c
 
 SYNOPSYS DESIGNWARE 8250 UART DRIVER
 M:	Ilpo Järvinen <ilpo.jarvinen@linux.intel.com>

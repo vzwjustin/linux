@@ -678,15 +678,6 @@ config GPIO_SIOX
 	  Say yes here to support SIOX I/O devices. These are units connected
 	  via a SIOX bus and have a number of fixed-direction I/O lines.
 
-config GPIO_SNPS_CREG
-	bool "Synopsys GPIO via CREG (Control REGisters) driver"
-	depends on ARC || COMPILE_TEST
-	help
-	  This driver supports GPIOs via CREG on various Synopsys SoCs.
-	  This is a single-register MMIO GPIO driver for complex cases
-	  where only several fields in register belong to GPIO lines and
-	  each GPIO line owns a field with different length and on/off value.
-
 config GPIO_SPACEMIT_K1
 	tristate "SPACEMIT K1 GPIO support"
 	depends on ARCH_SPACEMIT || COMPILE_TEST

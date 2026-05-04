@@ -42,14 +42,6 @@ config COMMON_CLK_WM831X
 
 source "drivers/clk/versatile/Kconfig"
 
-config CLK_HSDK
-	bool "PLL Driver for HSDK platform"
-	depends on ARC_SOC_HSDK || COMPILE_TEST
-	depends on HAS_IOMEM
-	help
-	  This driver supports the HSDK core, system, ddr, tunnel and hdmi PLLs
-	  control.
-
 config LMK04832
 	tristate "Ti LMK04832 JESD204B Compliant Clock Jitter Cleaner"
 	depends on SPI
