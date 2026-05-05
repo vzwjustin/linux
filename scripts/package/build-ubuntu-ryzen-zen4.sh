@@ -33,14 +33,12 @@ fi
 
 # Ubuntu's running config references signing keys that aren't shipped — strip
 # them so a self-signed build doesn't fail. Re-enable manually if you sign.
+# LOCALVERSION is passed to make below; setting it here too would concat and
+# produce e.g. "-zen4-zen4" in uname -r.
 scripts/config \
-	--disable SYSTEM_TRUSTED_KEYS \
-	--disable SYSTEM_REVOCATION_KEYS \
-	--set-str CONFIG_SYSTEM_TRUSTED_KEYS "" \
-	--set-str CONFIG_SYSTEM_REVOCATION_KEYS "" \
-	--disable DEBUG_INFO_BTF \
-	--disable MODULE_SIG_ALL \
-	--set-str LOCALVERSION "$LOCALVERSION"
+	--set-str SYSTEM_TRUSTED_KEYS "" \
+	--set-str SYSTEM_REVOCATION_KEYS "" \
+	--disable MODULE_SIG_ALL
 
 # Resolve any new symbols introduced since the base config, then layer the
 # Zen 4 fragment on top.
