@@ -15,61 +15,56 @@
 /* Context where printk messages are never suppressed */
 static atomic_t force_con;
 
-void printk_force_console_enter(void)
+void printk_force_console_inc(void)
 {
 	atomic_inc(&force_con);
 }
 
-void printk_force_console_exit(void)
+void printk_force_console_dec(void)
 {
 	atomic_dec(&force_con);
 }
 
-bool is_printk_force_console(void)
+bool printk_force_console_read(void)
 {
 	return atomic_read(&force_con);
 }
 
 static DEFINE_PER_CPU(int, printk_context);
 
-/* Can be preempted by NMI. */
-void __printk_safe_enter(void)
+void printk_context_inc(void)
 {
 	this_cpu_inc(printk_context);
 }
 
-/* Can be preempted by NMI. */
-void __printk_safe_exit(void)
+void printk_context_dec(void)
 {
 	this_cpu_dec(printk_context);
 }
 
-void __printk_deferred_enter(void)
+int printk_context_read(void)
 {
-	cant_migrate();
-	__printk_safe_enter();
+	return this_cpu_read(printk_context);
 }
 
-void __printk_deferred_exit(void)
+void printk_cant_migrate(void)
 {
 	cant_migrate();
-	__printk_safe_exit();
 }
 
-bool is_printk_legacy_deferred(void)
+bool printk_force_legacy_kthread(void)
 {
-	/*
-	 * The per-CPU variable @printk_context can be read safely in any
-	 * context. CPU migration is always disabled when set.
-	 *
-	 * A context holding the printk_cpu_sync must not spin waiting for
-	 * another CPU. For legacy printing, it could be the console_lock
-	 * or the port lock.
-	 */
-	return (force_legacy_kthread() ||
-		this_cpu_read(printk_context) ||
-		in_nmi() ||
-		is_printk_cpu_sync_owner());
+	return force_legacy_kthread();
+}
+
+bool printk_in_nmi(void)
+{
+	return in_nmi();
+}
+
+bool printk_cpu_sync_owner(void)
+{
+	return is_printk_cpu_sync_owner();
 }
 
 asmlinkage int vprintk(const char *fmt, va_list args)

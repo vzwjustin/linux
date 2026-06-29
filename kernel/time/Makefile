@@ -28,7 +28,7 @@ ifeq ($(CONFIG_SMP),y)
  obj-$(CONFIG_NO_HZ_COMMON)			+= timer_migration.o
 endif
 obj-$(CONFIG_GENERIC_GETTIMEOFDAY)		+= vsyscall.o
-obj-$(CONFIG_DEBUG_FS)				+= timekeeping_debug.o
+obj-$(CONFIG_DEBUG_FS)				+= timekeeping_debug.o timekeeping_debug_rs.o
 obj-$(CONFIG_TEST_UDELAY)			+= test_udelay.o
 obj-$(CONFIG_TIME_NS)				+= namespace.o
 obj-$(CONFIG_TIME_NS_VDSO)			+= namespace_vdso.o

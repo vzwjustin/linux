@@ -54,10 +54,7 @@ pub unsafe extern "C" fn smp_call_function_single(
 ///
 /// `csd` must point to a valid `call_single_data_t` with `func` and `info`
 /// fields set.
-pub unsafe extern "C" fn smp_call_function_single_async(
-    _cpu: c_int,
-    csd: *mut c_void,
-) -> c_int {
+pub unsafe extern "C" fn smp_call_function_single_async(_cpu: c_int, csd: *mut c_void) -> c_int {
     let mut flags: core::ffi::c_ulong = 0;
     // SAFETY: `flags` is a valid local variable.
     unsafe { up_local_irq_save(&mut flags) };
@@ -87,14 +84,16 @@ pub unsafe extern "C" fn on_each_cpu_cond_mask(
     // SAFETY: `up_preempt_disable` wraps the C `preempt_disable` macro.
     unsafe { up_preempt_disable() };
 
-    // SAFETY: `cond_func` is Some here because `is_none()` short-circuits
-    // the `||`. `mask` is valid per caller contract.
-    let do_call = (cond_func.is_none() || {
-        // SAFETY: `cond_func` is Some due to the short-circuit above.
-        let cf = unsafe { cond_func.unwrap_unchecked() };
-        // SAFETY: Caller guarantees `cond_func` and `info` are valid.
-        unsafe { cf(0, info) }
-    }) && unsafe { up_cpumask_test_cpu(0, mask) };
+    let condition_matches = match cond_func {
+        None => true,
+        Some(cf) => {
+            // SAFETY: Caller guarantees `cond_func` and `info` are valid.
+            unsafe { cf(0, info) }
+        }
+    };
+
+    // SAFETY: `mask` is valid per caller contract.
+    let do_call = condition_matches && unsafe { up_cpumask_test_cpu(0, mask) };
 
     if do_call {
         let mut flags: core::ffi::c_ulong = 0;
