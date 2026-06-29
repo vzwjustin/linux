@@ -10,28 +10,46 @@
 
 #include "tick-internal.h"
 
-/**
- * legacy_timer_tick() - advances the timekeeping infrastructure
- * @ticks:	number of ticks, that have elapsed since the last call.
- *
- * This is used by platforms that have not been converted to
- * generic clockevents.
- *
- * If 'ticks' is zero, the CPU is not handling timekeeping, so
- * only perform process accounting and profiling.
- *
- * Must be called with interrupts disabled.
- */
-void legacy_timer_tick(unsigned long ticks)
+/* C wrappers for inline/macro primitives callable from Rust */
+void tl_jiffies_lock(void)
 {
-	if (ticks) {
-		raw_spin_lock(&jiffies_lock);
-		write_seqcount_begin(&jiffies_seq);
-		do_timer(ticks);
-		write_seqcount_end(&jiffies_seq);
-		raw_spin_unlock(&jiffies_lock);
-		update_wall_time();
-	}
+	raw_spin_lock(&jiffies_lock);
+}
+
+void tl_jiffies_unlock(void)
+{
+	raw_spin_unlock(&jiffies_lock);
+}
+
+void tl_jiffies_seq_begin(void)
+{
+	write_seqcount_begin(&jiffies_seq);
+}
+
+void tl_jiffies_seq_end(void)
+{
+	write_seqcount_end(&jiffies_seq);
+}
+
+void tl_do_timer(unsigned long ticks)
+{
+	do_timer(ticks);
+}
+
+void tl_update_wall_time(void)
+{
+	update_wall_time();
+}
+
+void tl_update_process_times(void)
+{
 	update_process_times(user_mode(get_irq_regs()));
+}
+
+void tl_profile_tick(void)
+{
 	profile_tick(CPU_PROFILING);
 }
+
+/* Rust-implemented function */
+void legacy_timer_tick(unsigned long ticks);

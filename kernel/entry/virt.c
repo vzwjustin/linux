@@ -2,45 +2,47 @@
 
 #include <linux/entry-virt.h>
 
-static int xfer_to_guest_mode_work(unsigned long ti_work)
+/* C wrappers for inline/macro primitives callable from Rust */
+unsigned long virt_read_thread_flags(void)
 {
-	do {
-		int ret;
-
-		if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-			return -EINTR;
-
-		if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY))
-			schedule();
-
-		if (ti_work & _TIF_NOTIFY_RESUME)
-			resume_user_mode_work(NULL);
-
-		ret = arch_xfer_to_guest_mode_handle_work(ti_work);
-		if (ret)
-			return ret;
-
-		ti_work = read_thread_flags();
-	} while (ti_work & XFER_TO_GUEST_MODE_WORK);
-	return 0;
+	return read_thread_flags();
 }
 
-int xfer_to_guest_mode_handle_work(void)
+unsigned long virt_xfer_to_guest_mode_work_mask(void)
 {
-	unsigned long ti_work;
-
-	/*
-	 * This is invoked from the outer guest loop with interrupts and
-	 * preemption enabled.
-	 *
-	 * KVM invokes xfer_to_guest_mode_work_pending() with interrupts
-	 * disabled in the inner loop before going into guest mode. No need
-	 * to disable interrupts here.
-	 */
-	ti_work = read_thread_flags();
-	if (!(ti_work & XFER_TO_GUEST_MODE_WORK))
-		return 0;
-
-	return xfer_to_guest_mode_work(ti_work);
+	return XFER_TO_GUEST_MODE_WORK;
 }
+
+unsigned long virt_mask_sigpending_notify(void)
+{
+	return _TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL;
+}
+
+unsigned long virt_mask_need_resched(void)
+{
+	return _TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY;
+}
+
+unsigned long virt_mask_notify_resume(void)
+{
+	return _TIF_NOTIFY_RESUME;
+}
+
+void virt_schedule(void)
+{
+	schedule();
+}
+
+void virt_resume_user_mode_work(void)
+{
+	resume_user_mode_work(NULL);
+}
+
+int virt_arch_xfer_to_guest_mode_handle_work(unsigned long ti_work)
+{
+	return arch_xfer_to_guest_mode_handle_work(ti_work);
+}
+
+/* Rust-implemented function */
+int xfer_to_guest_mode_handle_work(void);
 EXPORT_SYMBOL_GPL(xfer_to_guest_mode_handle_work);
