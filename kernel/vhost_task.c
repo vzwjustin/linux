@@ -24,6 +24,22 @@ struct vhost_task {
 	struct mutex exit_mutex;
 };
 
+/* C wrappers for inline/macro primitives callable from Rust */
+struct task_struct *vhost_task_get_task(struct vhost_task *vtsk)
+{
+	return vtsk->task;
+}
+
+void vhost_wake_up_process(struct task_struct *task)
+{
+	wake_up_process(task);
+}
+
+void vhost_wake_up_new_task(struct task_struct *task)
+{
+	wake_up_new_task(task);
+}
+
 static int vhost_task_fn(void *data)
 {
 	struct vhost_task *vtsk = data;
@@ -67,17 +83,11 @@ static int vhost_task_fn(void *data)
 	do_exit(0);
 }
 
-/**
- * vhost_task_wake - wakeup the vhost_task
- * @vtsk: vhost_task to wake
- *
- * wake up the vhost_task worker thread
- */
-void vhost_task_wake(struct vhost_task *vtsk)
-{
-	wake_up_process(vtsk->task);
-}
+/* Rust-implemented functions */
+void vhost_task_wake(struct vhost_task *vtsk);
 EXPORT_SYMBOL_GPL(vhost_task_wake);
+void vhost_task_start(struct vhost_task *vtsk);
+EXPORT_SYMBOL_GPL(vhost_task_start);
 
 /**
  * vhost_task_stop - stop a vhost_task
@@ -152,13 +162,3 @@ struct vhost_task *vhost_task_create(bool (*fn)(void *),
 	return vtsk;
 }
 EXPORT_SYMBOL_GPL(vhost_task_create);
-
-/**
- * vhost_task_start - start a vhost_task created with vhost_task_create
- * @vtsk: vhost_task to wake up
- */
-void vhost_task_start(struct vhost_task *vtsk)
-{
-	wake_up_new_task(vtsk->task);
-}
-EXPORT_SYMBOL_GPL(vhost_task_start);

@@ -7,30 +7,47 @@
 
 #include "internals.h"
 
-void machine_kexec_mask_interrupts(void)
+/* C wrappers for inline/macro primitives callable from Rust */
+unsigned int kexec_nr_irqs(void)
 {
-	struct irq_desc *desc;
-	unsigned int i;
-
-	for_each_irq_desc(i, desc) {
-		struct irq_chip *chip;
-		int check_eoi = 1;
-
-		chip = irq_desc_get_chip(desc);
-		if (!chip || !irqd_is_started(&desc->irq_data))
-			continue;
-
-		if (IS_ENABLED(CONFIG_GENERIC_IRQ_KEXEC_CLEAR_VM_FORWARD)) {
-			/*
-			 * First try to remove the active state from an interrupt which is forwarded
-			 * to a VM. If the interrupt is not forwarded, try to EOI the interrupt.
-			 */
-			check_eoi = irq_set_irqchip_state(i, IRQCHIP_STATE_ACTIVE, false);
-		}
-
-		if (check_eoi && chip->irq_eoi && irqd_irq_inprogress(&desc->irq_data))
-			chip->irq_eoi(&desc->irq_data);
-
-		irq_shutdown(desc);
-	}
+	return irq_get_nr_irqs();
 }
+
+struct irq_desc *kexec_irq_desc(unsigned int irq)
+{
+	return irq_to_desc(irq);
+}
+
+struct irq_chip *kexec_desc_chip(struct irq_desc *desc)
+{
+	return irq_desc_get_chip(desc);
+}
+
+bool kexec_desc_started(struct irq_desc *desc)
+{
+	return irqd_is_started(&desc->irq_data);
+}
+
+bool kexec_clear_vm_forward_enabled(void)
+{
+	return IS_ENABLED(CONFIG_GENERIC_IRQ_KEXEC_CLEAR_VM_FORWARD);
+}
+
+int kexec_clear_irq_active(unsigned int irq)
+{
+	return irq_set_irqchip_state(irq, IRQCHIP_STATE_ACTIVE, false);
+}
+
+void kexec_maybe_eoi(struct irq_desc *desc, struct irq_chip *chip)
+{
+	if (chip->irq_eoi && irqd_irq_inprogress(&desc->irq_data))
+		chip->irq_eoi(&desc->irq_data);
+}
+
+void kexec_irq_shutdown(struct irq_desc *desc)
+{
+	irq_shutdown(desc);
+}
+
+/* Rust-implemented function */
+void machine_kexec_mask_interrupts(void);

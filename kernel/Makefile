@@ -14,7 +14,7 @@ obj-y     = fork.o exec_domain.o exec_state.o panic.o \
 
 obj-y += regset_rs.o exec_domain_rs.o
 obj-$(CONFIG_MULTIUSER) += groups.o
-obj-$(CONFIG_VHOST_TASK) += vhost_task.o
+obj-$(CONFIG_VHOST_TASK) += vhost_task.o vhost_task_rs.o
 
 ifdef CONFIG_FUNCTION_TRACER
 # Do not trace internal ftrace files
@@ -122,7 +122,7 @@ obj-$(CONFIG_RING_BUFFER) += trace/
 obj-$(CONFIG_TRACEPOINTS) += trace/
 obj-$(CONFIG_RETHOOK) += trace/
 obj-$(CONFIG_IRQ_WORK) += irq_work.o
-obj-$(CONFIG_CPU_PM) += cpu_pm.o
+obj-$(CONFIG_CPU_PM) += cpu_pm.o cpu_pm_rs.o
 obj-$(CONFIG_BPF) += bpf/
 obj-$(CONFIG_KCSAN) += kcsan/
 obj-$(CONFIG_SHADOW_CALL_STACK) += scs.o

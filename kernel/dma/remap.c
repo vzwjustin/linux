@@ -6,16 +6,45 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 
-struct page **dma_common_find_pages(void *cpu_addr)
+/* C wrappers for vmalloc helpers callable from Rust */
+unsigned long remap_vm_area_flags(void *cpu_addr)
 {
 	struct vm_struct *area = find_vm_area(cpu_addr);
 
-	if (!area || !(area->flags & VM_DMA_COHERENT))
-		return NULL;
-	WARN(area->flags != VM_DMA_COHERENT,
-	     "unexpected flags in area: %p\n", cpu_addr);
-	return area->pages;
+	if (!area)
+		return 0;
+	return area->flags;
 }
+
+struct page **remap_vm_area_pages(void *cpu_addr)
+{
+	return find_vm_area(cpu_addr)->pages;
+}
+
+void remap_warn_unexpected_vm_flags(void *cpu_addr)
+{
+	WARN(find_vm_area(cpu_addr)->flags != VM_DMA_COHERENT,
+	     "unexpected flags in area: %p\n", cpu_addr);
+}
+
+void remap_warn_invalid_free(void *cpu_addr)
+{
+	WARN(1, "trying to free invalid coherent area: %p\n", cpu_addr);
+}
+
+unsigned long remap_vm_dma_coherent_flag(void)
+{
+	return VM_DMA_COHERENT;
+}
+
+void remap_vunmap(void *cpu_addr)
+{
+	vunmap(cpu_addr);
+}
+
+/* Rust-implemented functions */
+struct page **dma_common_find_pages(void *cpu_addr);
+void dma_common_free_remap(void *cpu_addr, size_t size);
 
 /*
  * Remaps an array of PAGE_SIZE pages into another vm_area.
@@ -54,19 +83,4 @@ void *dma_common_contiguous_remap(struct page *page, size_t size,
 	kvfree(pages);
 
 	return vaddr;
-}
-
-/*
- * Unmaps a range previously mapped by dma_common_*_remap
- */
-void dma_common_free_remap(void *cpu_addr, size_t size)
-{
-	struct vm_struct *area = find_vm_area(cpu_addr);
-
-	if (!area || !(area->flags & VM_DMA_COHERENT)) {
-		WARN(1, "trying to free invalid coherent area: %p\n", cpu_addr);
-		return;
-	}
-
-	vunmap(cpu_addr);
 }
