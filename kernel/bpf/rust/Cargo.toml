@@ -1,0 +1,23 @@
+[package]
+name = "bpf-maps-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust implementations of Linux kernel BPF map data structures"
+license = "GPL-2.0"
+
+[lib]
+path = "lib.rs"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(CONFIG_BPF_RUST_MAPS)'] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

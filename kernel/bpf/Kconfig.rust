@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+# Configuration options for Rust BPF map implementations.
+# Provides a mutually exclusive choice between C and Rust implementations
+# of BPF map data structures.
+
+choice
+	prompt "BPF map implementation language"
+	depends on BPF_SYSCALL
+	default BPF_C_MAPS
+	help
+	  Select the implementation language for BPF map data structures.
+	  The Rust implementation provides memory safety guarantees through
+	  Rust's ownership model and type system while maintaining functional
+	  equivalence with the C implementation.
+
+config BPF_C_MAPS
+	bool "C implementation (default)"
+	help
+	  Use the traditional C implementation of BPF map data structures.
+	  This is the default and well-tested implementation.
+
+config BPF_RUST_MAPS
+	bool "Rust implementation"
+	depends on RUST
+	help
+	  Use the Rust implementation of BPF map data structures.
+	  This provides compile-time memory safety guarantees including
+	  protection against use-after-free, double-free, and buffer
+	  overflow vulnerabilities.
+
+	  The Rust implementation requires the Rust toolchain (rustc) to
+	  be available and CONFIG_RUST to be enabled.
+
+	  If unsure, say N.
+
+endchoice

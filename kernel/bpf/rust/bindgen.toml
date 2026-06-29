@@ -1,0 +1,68 @@
+# Bindgen configuration for BPF map Rust implementations
+#
+# This file specifies which C kernel headers to process when generating
+# Rust FFI bindings. The output is written to `bindings.rs` in this directory.
+#
+# Regenerate bindings when any listed header changes:
+#   make -C kernel/bpf/ rust-bindings
+
+[bindgen]
+# C headers to process for type and function declarations
+headers = [
+    "include/linux/bpf.h",
+    "include/linux/bpf_types.h",
+    "include/linux/bpf_mem_alloc.h",
+    "include/linux/slab.h",
+    "include/asm/rqspinlock.h",
+]
+
+# Additional local headers referenced by BPF map implementations
+local_headers = [
+    "kernel/bpf/map_in_map.h",
+    "kernel/bpf/percpu_freelist.h",
+    "kernel/bpf/bpf_lru_list.h",
+]
+
+# Types to generate #[repr(C)] bindings for
+allowlist_types = [
+    "bpf_map",
+    "bpf_attr",
+    "bpf_mem_alloc",
+    "rqspinlock_t",
+    "bpf_map_type",
+    "bpf_map_ops",
+]
+
+# Functions to generate extern "C" declarations for
+allowlist_functions = [
+    "bpf_map_area_alloc",
+    "bpf_map_area_free",
+    "__kmalloc",
+    "kfree",
+    "bpf_map_init_from_attr",
+    "bpf_mem_alloc_init",
+    "bpf_mem_alloc_destroy",
+    "_copy_from_user",
+    "rcu_read_lock",
+    "rcu_read_unlock",
+]
+
+# Constants/defines to include
+allowlist_vars = [
+    "BPF_ANY",
+    "BPF_F_.*",
+    "GFP_KERNEL",
+    "GFP_ATOMIC",
+    "GFP_NOWAIT",
+    "NUMA_NO_NODE",
+]
+
+# Output configuration
+output = "kernel/bpf/rust/bindings.rs"
+
+# Use core::ffi types instead of std
+use_core = true
+ctypes_prefix = "core::ffi"
+
+# Layout tests are not compatible with #![no_std] kernel environment
+layout_tests = false

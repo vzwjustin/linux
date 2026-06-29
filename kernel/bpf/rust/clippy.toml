@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Clippy configuration for the BPF maps Rust crate.
+#
+# This configuration aligns with the Linux kernel Rust coding guidelines
+# (Documentation/rust/coding-guidelines.rst) and enforces safety-critical
+# restrictions appropriate for kernel-space code where panics are fatal,
+# memory safety is paramount, and code must be auditable.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cognitive complexity threshold.
+# Kernel code favours straightforward logic that is easy to review.
+# Functions exceeding this threshold should be refactored into smaller units.
+cognitive-complexity-threshold = 30
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type complexity threshold.
+# Deeply nested generics reduce readability and make safety audits harder.
+type-complexity-threshold = 250
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Maximum number of lines in a single function body.
+# Excessively long functions are hard to review for safety invariants.
+too-many-lines-threshold = 150
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Maximum number of arguments for a function.
+# Kernel interfaces are kept narrow; wide signatures often indicate a
+# struct should be passed instead.
+too-many-arguments-threshold = 8
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Maximum number of struct fields.
+# Large structs should be decomposed into logical sub-structs.
+max-struct-bools = 3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Disallowed methods: these are panic-prone or unsafe-by-convention methods
+# that must never appear in kernel code. The crate-level #![deny(...)] lints
+# catch most of these at the lint level, but this provides an additional
+# backstop via clippy configuration.
+disallowed-methods = [
+    # std::process::exit — not available in no_std, but guard against it
+    "std::process::exit",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Disallowed types: types that should not appear in kernel Rust code.
+disallowed-types = [
+    # The standard library's HashMap/HashSet are not available in no_std
+    # and would use the wrong allocator. Use kernel-provided structures.
+    "std::collections::HashMap",
+    "std::collections::HashSet",
+]

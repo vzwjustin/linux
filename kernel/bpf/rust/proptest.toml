@@ -1,0 +1,17 @@
+# PropTest configuration for BPF maps Rust conversion property-based tests.
+#
+# Feature: kernel-rust-conversion
+# Requirements: 5.2 (minimum 1000 iterations per property)
+
+[default]
+# Minimum number of test cases generated per property.
+cases = 1000
+
+# Maximum number of shrink iterations when a failure is found.
+max_shrink_iters = 10000
+
+# Fork mode disabled — run tests in-process for speed.
+fork = false
+
+# Timeout per test case (ms). Generous for complex data structure operations.
+timeout = 60000
