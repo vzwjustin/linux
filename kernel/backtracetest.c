@@ -13,11 +13,13 @@
 #include <linux/sched.h>
 #include <linux/stacktrace.h>
 
-static void backtrace_test_normal(void)
+void backtrace_test_info(const char *msg)
 {
-	pr_info("Testing a backtrace from process context.\n");
-	pr_info("The following trace is a kernel self test and not a bug!\n");
+	pr_info("%s", msg);
+}
 
+void backtrace_test_dump_stack(void)
+{
 	dump_stack();
 }
 
@@ -28,44 +30,33 @@ static void backtrace_test_bh_workfn(struct work_struct *work)
 
 static DECLARE_WORK(backtrace_bh_work, &backtrace_test_bh_workfn);
 
-static void backtrace_test_bh(void)
+void backtrace_test_bh_queue_flush(void)
 {
-	pr_info("Testing a backtrace from BH context.\n");
-	pr_info("The following trace is a kernel self test and not a bug!\n");
-
 	queue_work(system_bh_wq, &backtrace_bh_work);
 	flush_work(&backtrace_bh_work);
 }
 
 #ifdef CONFIG_STACKTRACE
-static void backtrace_test_saved(void)
+void backtrace_test_saved_rs(void)
 {
 	unsigned long entries[8];
 	unsigned int nr_entries;
-
-	pr_info("Testing a saved backtrace.\n");
-	pr_info("The following trace is a kernel self test and not a bug!\n");
 
 	nr_entries = stack_trace_save(entries, ARRAY_SIZE(entries), 0);
 	stack_trace_print(entries, nr_entries, 0);
 }
 #else
-static void backtrace_test_saved(void)
+void backtrace_test_saved_rs(void)
 {
 	pr_info("Saved backtrace test skipped.\n");
 }
 #endif
 
+int backtrace_regression_test_rs(void);
+
 static int backtrace_regression_test(void)
 {
-	pr_info("====[ backtrace testing ]===========\n");
-
-	backtrace_test_normal();
-	backtrace_test_bh();
-	backtrace_test_saved();
-
-	pr_info("====[ end of backtrace testing ]====\n");
-	return 0;
+	return backtrace_regression_test_rs();
 }
 
 static void exitf(void)

@@ -10,6 +10,9 @@
 #include <linux/printk.h>
 #include "internal.h"
 
+int same_magic_rs(const char *amagic, const char *bmagic, bool has_crcs);
+void modversion_ext_advance_rs(struct modversion_info_ext *vers);
+
 int check_version(const struct load_info *info,
 		  const char *symname,
 			 struct module *mod,
@@ -97,11 +100,7 @@ int check_modstruct_version(const struct load_info *info,
 int same_magic(const char *amagic, const char *bmagic,
 	       bool has_crcs)
 {
-	if (has_crcs) {
-		amagic += strcspn(amagic, " ");
-		bmagic += strcspn(bmagic, " ");
-	}
-	return strcmp(amagic, bmagic) == 0;
+	return same_magic_rs(amagic, bmagic, has_crcs);
 }
 
 void modversion_ext_start(const struct load_info *info,
@@ -127,9 +126,7 @@ void modversion_ext_start(const struct load_info *info,
 
 void modversion_ext_advance(struct modversion_info_ext *vers)
 {
-	vers->remaining--;
-	vers->crc++;
-	vers->name += strlen(vers->name) + 1;
+	modversion_ext_advance_rs(vers);
 }
 
 /*

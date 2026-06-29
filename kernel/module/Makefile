@@ -8,18 +8,18 @@
 KCOV_INSTRUMENT_main.o := n
 
 obj-y += main.o
-obj-y += strict_rwx.o
+obj-y += strict_rwx.o strict_rwx_rs.o
 obj-y += kmod.o
 obj-$(CONFIG_MODULE_DEBUG_AUTOLOAD_DUPS) += dups.o
 obj-$(CONFIG_MODULE_DECOMPRESS) += decompress.o
-obj-$(CONFIG_MODULE_SIG) += signing.o
-obj-$(CONFIG_LIVEPATCH) += livepatch.o
+obj-$(CONFIG_MODULE_SIG) += signing.o signing_rs.o
+obj-$(CONFIG_LIVEPATCH) += livepatch.o livepatch_rs.o
 obj-$(CONFIG_MODULES_TREE_LOOKUP) += tree_lookup.o
-obj-$(CONFIG_DEBUG_KMEMLEAK) += debug_kmemleak.o
+obj-$(CONFIG_DEBUG_KMEMLEAK) += debug_kmemleak.o debug_kmemleak_rs.o
 obj-$(CONFIG_KALLSYMS) += kallsyms.o
-obj-$(CONFIG_PROC_FS) += procfs.o
+obj-$(CONFIG_PROC_FS) += procfs.o procfs_rs.o
 obj-$(CONFIG_SYSFS) += sysfs.o
-obj-$(CONFIG_KGDB_KDB) += kdb.o
-obj-$(CONFIG_MODVERSIONS) += version.o
+obj-$(CONFIG_KGDB_KDB) += kdb.o kdb_rs.o
+obj-$(CONFIG_MODVERSIONS) += version.o version_rs.o
 obj-$(CONFIG_MODULE_UNLOAD_TAINT_TRACKING) += tracking.o
 obj-$(CONFIG_MODULE_STATS) += stats.o

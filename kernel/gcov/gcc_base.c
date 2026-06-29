@@ -5,31 +5,62 @@
 #include <linux/mutex.h>
 #include "gcov.h"
 
+static unsigned int gcov_version;
+
+void gcov_base_lock(void)
+{
+	mutex_lock(&gcov_lock);
+}
+
+void gcov_base_unlock(void)
+{
+	mutex_unlock(&gcov_lock);
+}
+
+unsigned int gcov_base_version(void)
+{
+	return gcov_version;
+}
+
+void gcov_base_set_version(unsigned int version)
+{
+	gcov_version = version;
+}
+
+unsigned int gcov_base_info_version(struct gcov_info *info)
+{
+	return gcov_info_version(info);
+}
+
+void gcov_base_print_version(unsigned int version)
+{
+	pr_info("version magic: 0x%x\n", version);
+}
+
+void gcov_base_info_link(struct gcov_info *info)
+{
+	gcov_info_link(info);
+}
+
+bool gcov_base_events_enabled(void)
+{
+	return gcov_events_enabled;
+}
+
+void gcov_base_event_add(struct gcov_info *info)
+{
+	gcov_event(GCOV_ADD, info);
+}
+
+void __gcov_init_rs(struct gcov_info *info);
+
 /*
  * __gcov_init is called by gcc-generated constructor code for each object
  * file compiled with -fprofile-arcs.
  */
 void __gcov_init(struct gcov_info *info)
 {
-	static unsigned int gcov_version;
-
-	mutex_lock(&gcov_lock);
-	if (gcov_version == 0) {
-		gcov_version = gcov_info_version(info);
-		/*
-		 * Printing gcc's version magic may prove useful for debugging
-		 * incompatibility reports.
-		 */
-		pr_info("version magic: 0x%x\n", gcov_version);
-	}
-	/*
-	 * Add new profiling data structure to list and inform event
-	 * listener.
-	 */
-	gcov_info_link(info);
-	if (gcov_events_enabled)
-		gcov_event(GCOV_ADD, info);
-	mutex_unlock(&gcov_lock);
+	__gcov_init_rs(info);
 }
 EXPORT_SYMBOL(__gcov_init);
 

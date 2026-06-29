@@ -16,6 +16,8 @@
 #include <uapi/linux/module.h>
 #include "internal.h"
 
+const char *module_sig_reason_rs(int err, int enodata, int enopkg, int enokey);
+
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "module."
 
@@ -96,18 +98,8 @@ int module_sig_check(struct load_info *info, int flags)
 	 * without a valid signature on them, but if we're not enforcing,
 	 * certain errors are non-fatal.
 	 */
-	switch (err) {
-	case -ENODATA:
-		reason = "unsigned module";
-		break;
-	case -ENOPKG:
-		reason = "module with unsupported crypto";
-		break;
-	case -ENOKEY:
-		reason = "module with unavailable key";
-		break;
-
-	default:
+	reason = module_sig_reason_rs(err, -ENODATA, -ENOPKG, -ENOKEY);
+	if (!reason) {
 		/*
 		 * All other errors are fatal, including lack of memory,
 		 * unparseable signatures, and signature check failures --

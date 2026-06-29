@@ -3,50 +3,8 @@
 #include <kunit/test.h>
 #include <linux/time.h>
 
-/*
- * Traditional implementation of leap year evaluation, but note that long
- * is a signed type and the tests do cover negative year values. So this
- * can't use the is_leap_year() helper from rtc.h.
- */
-static bool is_leap(long year)
-{
-	return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-}
-
-/*
- * Gets the last day of a month.
- */
-static int last_day_of_month(long year, int month)
-{
-	if (month == 2)
-		return 28 + is_leap(year);
-	if (month == 4 || month == 6 || month == 9 || month == 11)
-		return 30;
-	return 31;
-}
-
-/*
- * Advances a date by one day.
- */
-static void advance_date(long *year, int *month, int *mday, int *yday)
-{
-	if (*mday != last_day_of_month(*year, *month)) {
-		++*mday;
-		++*yday;
-		return;
-	}
-
-	*mday = 1;
-	if (*month != 12) {
-		++*month;
-		++*yday;
-		return;
-	}
-
-	*month = 1;
-	*yday  = 0;
-	++*year;
-}
+int time_test_last_day_of_month_rs(long year, int month);
+void time_test_advance_date_rs(long *year, int *month, int *mday, int *yday);
 
 /*
  * Checks every day in a 160000 years interval centered at 1970-01-01
@@ -83,7 +41,7 @@ static void time64_to_tm_test_date_range(struct kunit *test)
 		KUNIT_ASSERT_EQ_MSG(test, mdday, result.tm_mday, FAIL_MSG);
 		KUNIT_ASSERT_EQ_MSG(test, yday, result.tm_yday, FAIL_MSG);
 
-		advance_date(&year, &month, &mdday, &yday);
+		time_test_advance_date_rs(&year, &month, &mdday, &yday);
 	}
 }
 

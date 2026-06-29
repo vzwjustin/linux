@@ -8,18 +8,24 @@
 
 #include "kexec_handover_internal.h"
 
+unsigned int kho_scratch_count(void)
+{
+	return kho_scratch_cnt;
+}
+
+phys_addr_t kho_scratch_addr(unsigned int i)
+{
+	return kho_scratch[i].addr;
+}
+
+size_t kho_scratch_size(unsigned int i)
+{
+	return kho_scratch[i].size;
+}
+
+bool kho_scratch_overlap_rs(phys_addr_t phys, size_t size);
+
 bool kho_scratch_overlap(phys_addr_t phys, size_t size)
 {
-	phys_addr_t scratch_start, scratch_end;
-	unsigned int i;
-
-	for (i = 0; i < kho_scratch_cnt; i++) {
-		scratch_start = kho_scratch[i].addr;
-		scratch_end = kho_scratch[i].addr + kho_scratch[i].size;
-
-		if (phys < scratch_end && (phys + size) > scratch_start)
-			return true;
-	}
-
-	return false;
+	return kho_scratch_overlap_rs(phys, size);
 }

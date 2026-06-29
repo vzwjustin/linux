@@ -7,7 +7,7 @@ endif
 
 obj-y += time.o timer.o hrtimer.o sleep_timeout.o
 obj-y += timekeeping.o ntp.o clocksource.o jiffies.o timer_list.o
-obj-y += timeconv.o timecounter.o alarmtimer.o
+obj-y += timeconv.o timeconv_rs.o timecounter.o alarmtimer.o
 timecounter-y += timecounter_rs.o timecounter_shim.o
 
 ifeq ($(CONFIG_POSIX_TIMERS),y)
@@ -28,9 +28,9 @@ ifeq ($(CONFIG_SMP),y)
  obj-$(CONFIG_NO_HZ_COMMON)			+= timer_migration.o
 endif
 obj-$(CONFIG_GENERIC_GETTIMEOFDAY)		+= vsyscall.o
-obj-$(CONFIG_DEBUG_FS)				+= timekeeping_debug.o
+obj-$(CONFIG_DEBUG_FS)				+= timekeeping_debug.o timekeeping_debug_rs.o
 obj-$(CONFIG_TEST_UDELAY)			+= test_udelay.o
 obj-$(CONFIG_TIME_NS)				+= namespace.o
 obj-$(CONFIG_TIME_NS_VDSO)			+= namespace_vdso.o
 obj-$(CONFIG_TEST_CLOCKSOURCE_WATCHDOG)		+= clocksource-wdtest.o
-obj-$(CONFIG_TIME_KUNIT_TEST)			+= time_test.o
+obj-$(CONFIG_TIME_KUNIT_TEST)			+= time_test.o time_test_rs.o

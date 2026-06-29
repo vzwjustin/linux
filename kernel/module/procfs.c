@@ -12,6 +12,48 @@
 #include <linux/proc_fs.h>
 #include "internal.h"
 
+bool module_proc_is_unformed_rs_helper(const struct module *mod)
+{
+	return mod->state == MODULE_STATE_UNFORMED;
+}
+
+bool module_proc_is_going_rs_helper(const struct module *mod)
+{
+	return mod->state == MODULE_STATE_GOING;
+}
+
+bool module_proc_is_coming_rs_helper(const struct module *mod)
+{
+	return mod->state == MODULE_STATE_COMING;
+}
+
+unsigned int module_proc_mem_type_count_rs_helper(void)
+{
+	return MOD_MEM_NUM_TYPES;
+}
+
+unsigned int module_proc_mem_size_rs_helper(const struct module *mod,
+					   unsigned int type)
+{
+	return mod->mem[type].size;
+}
+
+void *module_proc_text_base_rs_helper(const struct module *mod)
+{
+	return mod->mem[MOD_TEXT].base;
+}
+
+unsigned int module_proc_taints_rs_helper(const struct module *mod)
+{
+	return mod->taints;
+}
+
+bool module_proc_is_unformed_rs(const struct module *mod);
+unsigned int module_proc_total_size_rs(const struct module *mod);
+const char *module_proc_state_name_rs(const struct module *mod);
+void *module_proc_address_value_rs(const struct module *mod, bool hide_pointers);
+bool module_proc_has_taints_rs(const struct module *mod);
+
 #ifdef CONFIG_MODULE_UNLOAD
 static inline void print_unload_info(struct seq_file *m, struct module *mod)
 {
@@ -62,15 +104,6 @@ static void m_stop(struct seq_file *m, void *p)
 	mutex_unlock(&module_mutex);
 }
 
-static unsigned int module_total_size(struct module *mod)
-{
-	int size = 0;
-
-	for_each_mod_mem_type(type)
-		size += mod->mem[type].size;
-	return size;
-}
-
 static int m_show(struct seq_file *m, void *p)
 {
 	struct module *mod = list_entry(p, struct module, list);
@@ -79,24 +112,21 @@ static int m_show(struct seq_file *m, void *p)
 	unsigned int size;
 
 	/* We always ignore unformed modules. */
-	if (mod->state == MODULE_STATE_UNFORMED)
+	if (module_proc_is_unformed_rs(mod))
 		return 0;
 
-	size = module_total_size(mod);
+	size = module_proc_total_size_rs(mod);
 	seq_printf(m, "%s %u", mod->name, size);
 	print_unload_info(m, mod);
 
 	/* Informative for users. */
-	seq_printf(m, " %s",
-		   mod->state == MODULE_STATE_GOING ? "Unloading" :
-		   mod->state == MODULE_STATE_COMING ? "Loading" :
-		   "Live");
+	seq_printf(m, " %s", module_proc_state_name_rs(mod));
 	/* Used by oprofile and other similar tools. */
-	value = m->private ? NULL : mod->mem[MOD_TEXT].base;
+	value = module_proc_address_value_rs(mod, !!m->private);
 	seq_printf(m, " 0x%px", value);
 
 	/* Taints info */
-	if (mod->taints)
+	if (module_proc_has_taints_rs(mod))
 		seq_printf(m, " %s", module_flags(mod, buf, true));
 
 	seq_puts(m, "\n");
