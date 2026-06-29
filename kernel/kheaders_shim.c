@@ -32,17 +32,47 @@ extern char kernel_headers_data_end[];
 static struct bin_attribute kheaders_attr __ro_after_init =
 	__BIN_ATTR_SIMPLE_RO(kheaders.tar.xz, 0444);
 
+const void *ikheaders_data_start(void)
+{
+	return kernel_headers_data;
+}
+
+size_t ikheaders_data_size(void)
+{
+	return kernel_headers_data_end - kernel_headers_data;
+}
+
+void ikheaders_attr_set_private(const void *data)
+{
+	kheaders_attr.private = (void *)data;
+}
+
+void ikheaders_attr_set_size(size_t size)
+{
+	kheaders_attr.size = size;
+}
+
+int ikheaders_sysfs_create(void)
+{
+	return sysfs_create_bin_file(kernel_kobj, &kheaders_attr);
+}
+
+void ikheaders_sysfs_remove(void)
+{
+	sysfs_remove_bin_file(kernel_kobj, &kheaders_attr);
+}
+
+int ikheaders_init_rs(void);
+void ikheaders_cleanup_rs(void);
+
 static int __init ikheaders_init(void)
 {
-	kheaders_attr.private = kernel_headers_data;
-	kheaders_attr.size = (kernel_headers_data_end -
-			      kernel_headers_data);
-	return sysfs_create_bin_file(kernel_kobj, &kheaders_attr);
+	return ikheaders_init_rs();
 }
 
 static void __exit ikheaders_cleanup(void)
 {
-	sysfs_remove_bin_file(kernel_kobj, &kheaders_attr);
+	ikheaders_cleanup_rs();
 }
 
 module_init(ikheaders_init);
